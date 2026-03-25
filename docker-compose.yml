@@ -60,21 +60,28 @@ services:
         max-size: "20m"
         max-file: "5"
 
-  # ── Loopback proxy ────────────────────────────────────────────────────────────
-  # Shares the gateway's network namespace. Listens on 0.0.0.0 so Docker's
-  # port forwarding can reach it, then forwards to the gateway's loopback.
-  openclaw-proxy:
+  # ── Loopback proxies ──────────────────────────────────────────────────────────
+  # Each shares the gateway's network namespace and forwards one port from
+  # 0.0.0.0 (reachable via Docker's eth0 forwarding) to 127.0.0.1 (gateway loopback).
+
+  # Web UI + WebSocket: host:18789 → container:18800 → gateway:18789
+  openclaw-proxy-ws:
     image: alpine/socat
-    container_name: openclaw-proxy
+    container_name: openclaw-proxy-ws
     network_mode: "service:openclaw-gateway"
+    command: TCP-LISTEN:18800,fork,reuseaddr TCP:127.0.0.1:18789
     restart: unless-stopped
-    # Forward two ports: gateway WebSocket (18800→18789) and browser control (18802→18791)
-    command: >
-      sh -c "
-        socat TCP-LISTEN:18800,fork,reuseaddr TCP:127.0.0.1:18789 &
-        socat TCP-LISTEN:18802,fork,reuseaddr TCP:127.0.0.1:18791 &
-        wait
-      "
+    depends_on:
+      openclaw-gateway:
+        condition: service_healthy
+
+  # Browser control: host:18791 → container:18802 → gateway:18791
+  openclaw-proxy-browser:
+    image: alpine/socat
+    container_name: openclaw-proxy-browser
+    network_mode: "service:openclaw-gateway"
+    command: TCP-LISTEN:18802,fork,reuseaddr TCP:127.0.0.1:18791
+    restart: unless-stopped
     depends_on:
       openclaw-gateway:
         condition: service_healthy
