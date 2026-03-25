@@ -1,4 +1,7 @@
 .env
+# Live gateway config — may contain secrets (botToken, passwords).
+# Copy data/config/openclaw.json.example → data/config/openclaw.json to create yours.
+data/config/openclaw.json
 data/workspace/
 data/canvas/
 data/identity/

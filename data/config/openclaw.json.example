@@ -40,4 +40,33 @@
     // "clawhub": {},
     // "mcporter": {},
   },
+
+  // ── Channels (optional) ────────────────────────────────────────────────────
+  // Uncomment and fill in to connect agents to messaging platforms.
+  // ⚠️  This file (openclaw.json) is gitignored — secrets stay local.
+  //     Copy openclaw.json.example → openclaw.json, never edit the example
+  //     directly with real tokens.
+
+  // channels: {
+  //   telegram: {
+  //     enabled: true,
+  //     botToken: "123456789:ABCDef...",  // from @BotFather — keep secret
+  //
+  //     // DM access control:
+  //     //   "allowlist" — only listed numeric user IDs (get yours from @userinfobot)
+  //     //   "pairing"   — approve via web UI (safer default for shared gateways)
+  //     //   "open"      — anyone (not recommended)
+  //     dmPolicy: "allowlist",
+  //     allowFrom: ["YOUR_TELEGRAM_USER_ID"],
+  //
+  //     // Group chats (bot only replies when @-mentioned by default)
+  //     groupPolicy: "allowlist",
+  //     groups: {
+  //       "*": { requireMention: true },
+  //     },
+  //
+  //     streaming: "partial",   // show reply chunks as they arrive
+  //     ackReaction: "👀",      // reaction while processing
+  //   },
+  // },
 }

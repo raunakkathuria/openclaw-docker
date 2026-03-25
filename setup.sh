@@ -69,6 +69,20 @@ if [[ "$RUNTIME" == "docker" ]]; then
   fi
 fi
 
+# Copy gateway config template on first run.
+# data/config/openclaw.json is gitignored so secrets (e.g. Telegram botToken)
+# never end up in the repo. The .example file is the tracked template.
+if [[ -f data/config/openclaw.json ]]; then
+  info "data/config/openclaw.json already exists — skipping (delete to regenerate)"
+else
+  cp data/config/openclaw.json.example data/config/openclaw.json
+  success "data/config/openclaw.json created from example"
+  echo ""
+  echo -e "  ${YELLOW}NOTE:${RESET} Edit ${BOLD}data/config/openclaw.json${RESET} to add channels (Telegram etc.)."
+  echo -e "  It is gitignored — secrets in it will not be committed."
+  echo ""
+fi
+
 success "config/, workspace/, and canvas/ ready"
 
 # ── .env setup ────────────────────────────────────────────────────────────────

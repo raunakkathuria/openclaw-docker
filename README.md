@@ -2,6 +2,33 @@
 
 Self-hosted OpenClaw gateway with per-agent sandbox isolation, running on Docker.
 
+## Why this repo?
+
+OpenClaw's [official Docker docs](https://docs.openclaw.ai/install/docker) give you the basics — a single `docker run` or minimal `docker-compose.yml` — but leave several production-readiness gaps that take real debugging to close:
+
+| Problem | What OpenClaw docs say | What this repo does |
+|---------|----------------------|---------------------|
+| **Networking** | Mount the Docker socket and expose ports | Adds a socat sidecar to bridge Docker port-forwarding to the gateway's loopback listener (the gateway always binds to `127.0.0.1` — Docker's port-forward delivers to `eth0` — they never connect without this) |
+| **`EACCES` permission errors** | Mount individual subdirs (`config/`, `workspace/`, `canvas/`) | Mounts the entire `~/.openclaw` directory so OpenClaw can create any new subdirectory it needs without hitting permission errors |
+| **Security audit warnings** | Not covered | `0 critical · 0 warn` out of the box: `gateway.trustedProxies` is auto-applied via `setup.sh` (can't be set in the JSON5 file — silently ignored there) |
+| **Secret management** | Bot tokens / API keys go directly in config | Gitignores the live `openclaw.json`; tracks only an `.example` template — same pattern as `.env` |
+| **Multi-agent sandboxing** | Mentioned but not configured | Pre-configured agent sandbox defaults (isolated container per tool call, `network: none`, read-only root, 1 GB RAM cap, dropped capabilities) |
+| **First-run experience** | Manual steps | `setup.sh` handles runtime detection, directory creation, token generation, image pull, runtime config application, and onboarding wizard in one command |
+
+The core networking fix (socat sidecar + shared network namespace) is non-obvious and not documented upstream — it was found through debugging after the standard setup failed.
+
+### Security posture
+
+Most Docker-based OpenClaw setups skip hardening. This repo ships with it on by default:
+
+| Control | Detail |
+|---------|--------|
+| **Clean security audit** | `0 critical · 0 warn` — `gateway.trustedProxies` auto-applied on first run; most setups leave this warning unresolved |
+| **Secret management** | Live `data/config/openclaw.json` is gitignored (may contain bot tokens, passwords); only the `.example` template is tracked — same pattern as `.env` |
+| **Per-agent sandbox** | Every agent's tool calls run in a dedicated ephemeral container: `capDrop: ALL`, `network: none`, read-only root filesystem, 1 GB RAM cap, 256 PID limit |
+| **Loopback-only binding** | All host ports bound to `127.0.0.1` — not reachable from other machines on the network |
+| **Minimal attack surface** | socat containers use `alpine/socat` (no shell, no package manager); gateway runs as non-root `node` user |
+
 ## Architecture
 
 ```
@@ -43,7 +70,10 @@ cp .env.example .env
 # 2. Generate a gateway token if you don't have one
 openssl rand -hex 32
 
-# 3. Start
+# 3. Start (first time — applies all runtime config too)
+./setup.sh
+
+# Or for subsequent starts:
 docker compose up -d
 
 # 4. Verify
@@ -58,18 +88,30 @@ open http://localhost:18789
 
 ```
 openclaw-docker/
-├── docker-compose.yml       # All services
-├── .env.example             # Config template — copy to .env
-├── .env                     # Your secrets (git-ignored)
-├── setup.sh                 # First-run setup helper
+├── docker-compose.yml              # All services
+├── .env.example                    # Secrets template — copy to .env         [tracked]
+├── .env                            # Your secrets                             [git-ignored]
+├── setup.sh                        # First-run setup helper
 ├── data/
-│   └── config/
-│       └── openclaw.json    # Gateway + agent config (tracked)
-│   └── workspace/           # Agent files (git-ignored)
-│   └── identity/            # Auth state (git-ignored)
-│   └── sessions/            # Session logs (git-ignored)
+│   ├── config/
+│   │   ├── openclaw.json.example   # Gateway config template                  [tracked]
+│   │   └── openclaw.json           # Your gateway config — may hold secrets   [git-ignored]
+│   ├── openclaw.json               # Runtime config store (written by CLI)    [git-ignored]
+│   ├── workspace/                  # Agent files                              [git-ignored]
+│   ├── identity/                   # Auth state                               [git-ignored]
+│   └── sessions/                   # Session logs                             [git-ignored]
 └── README.md
 ```
+
+**Config file summary** — OpenClaw uses three config sources:
+
+| File | Format | Written by | Purpose | Tracked? |
+|------|--------|-----------|---------|----------|
+| `data/config/openclaw.json` | JSON5 | You | Startup config: gateway mode/bind, agent sandbox defaults, channels (Telegram etc.) | **No** — may contain secrets like bot tokens |
+| `data/config/openclaw.json.example` | JSON5 | This repo | Template for the above | Yes |
+| `data/openclaw.json` | JSON | `config set` CLI | Runtime config: `trustedProxies` and other CLI-managed settings | No — updated with timestamp on every start |
+
+`setup.sh` copies `openclaw.json.example → openclaw.json` on first run (same pattern as `.env.example → .env`).
 
 `data/` is mounted as `/home/node/.openclaw` so OpenClaw can create any subdirectory it needs without permission errors.
 
@@ -103,32 +145,86 @@ docker compose down
 # Logs
 docker compose logs -f openclaw-gateway
 
-# Status
+# Status & security audit
 docker compose exec openclaw-gateway node openclaw.mjs status
-
-# Security audit
 docker compose exec openclaw-gateway node openclaw.mjs security audit
 
 # Approve a paired device
 docker compose exec openclaw-gateway node openclaw.mjs devices list
 docker compose exec openclaw-gateway node openclaw.mjs devices approve <ID>
 
-# Add a channel (Telegram, Discord, WhatsApp)
-docker compose run --rm openclaw-cli channels add --channel telegram --token "<TOKEN>"
+# Read / write runtime config (use this, not the JSON5 file, for trustedProxies etc.)
+docker compose exec openclaw-gateway node openclaw.mjs config get <path>
+docker compose exec openclaw-gateway node openclaw.mjs config set <path> <value>
 
-# Restart just the gateway (picks up config changes)
+# Restart just the gateway (picks up JSON5 config changes)
 docker compose restart openclaw-gateway
 ```
 
-## Key Config (`data/config/openclaw.json`)
+## Key Config
+
+OpenClaw uses two separate config systems:
+
+### `data/config/openclaw.json` (JSON5 — startup config)
 
 | Setting | Value | Why |
 |---------|-------|-----|
-| `gateway.mode` | `"local"` | Required for self-hosted — without this, OpenClaw tries to connect to Claude.ai's remote gateway |
+| `gateway.mode` | `"local"` | Required for self-hosted — without this OpenClaw tries to connect to Claude.ai's remote gateway |
 | `gateway.bind` | `"lan"` | Accepts port-forwarded connections, not just loopback |
-| `gateway.trustedProxies` | `["127.0.0.1","::1"]` | Trusts the socat proxy (same network namespace) |
 | `gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback` | `true` | Required with non-loopback bind — uses HTTP Host header for origin check |
 | `agents.defaults.sandbox.mode` | `"non-main"` | Each agent's tool calls run in isolated containers |
+
+### Runtime config (via `config set` — stored in `data/openclaw.json`)
+
+| Setting | Command | Why |
+|---------|---------|-----|
+| `gateway.trustedProxies` | `config set gateway.trustedProxies '["127.0.0.1","::1"]'` | Trusts the socat sidecar; clears the `trusted_proxies_missing` audit warning. Applied automatically by `setup.sh`. |
+
+## Channels (WhatsApp / Telegram / Discord)
+
+```bash
+# WhatsApp (QR scan)
+docker compose run --rm openclaw-cli channels login
+
+# Telegram
+docker compose run --rm openclaw-cli channels add --channel telegram --token "<BOT_TOKEN>"
+
+# Discord
+docker compose run --rm openclaw-cli channels add --channel discord --token "<BOT_TOKEN>"
+```
+
+Get a Telegram token from **@BotFather** (`/newbot`). The CLI stores the token securely — you don't need to edit any config file for basic setup.
+
+### Advanced Telegram config
+
+For access control (`dmPolicy`, `allowFrom`) or group settings, add a `channels` block to `data/config/openclaw.json` after running the CLI command above:
+
+> `data/config/openclaw.json` is **gitignored** — bot tokens and other secrets stay local and are never committed.
+
+```json5
+channels: {
+  telegram: {
+    enabled: true,
+    botToken: "123456789:ABCDef...",   // from @BotFather
+
+    // "pairing" = approve via web UI (default), "allowlist" = only listed IDs, "open" = anyone
+    dmPolicy: "allowlist",
+    allowFrom: ["YOUR_NUMERIC_USER_ID"],  // get yours from @userinfobot
+
+    groupPolicy: "allowlist",
+    groups: {
+      "*": { requireMention: true },
+    },
+
+    streaming: "partial",
+    ackReaction: "👀",
+  },
+},
+```
+
+Restart after editing: `docker compose restart openclaw-gateway`
+
+Verify: `docker compose exec openclaw-gateway node openclaw.mjs status`
 
 ## Multiple Agents
 
@@ -137,13 +233,32 @@ One gateway manages all agents. Each agent automatically gets its own sandbox co
 ## Troubleshooting
 
 **`curl: (52) Empty reply from server`**
-The gateway is running but the origin check is blocking the connection. Ensure `dangerouslyAllowHostHeaderOriginFallback: true` is in `data/config/openclaw.json` and restart.
+The socat proxy containers aren't running yet — the gateway binds to its own loopback (`127.0.0.1`) and socat is what bridges Docker's port-forwarding to it. Check that both proxy containers are up:
+```bash
+docker compose ps
+docker compose up -d   # bring up any stopped services
+```
+Both `openclaw-proxy-ws` and `openclaw-proxy-browser` must be `Up (healthy)` for the gateway to be reachable from the host.
 
 **`EACCES: permission denied, mkdir '/home/node/.openclaw/<dir>'`**
 A new OpenClaw subdirectory couldn't be created. Since `./data` is mounted as the entire `.openclaw` dir, this shouldn't happen — check that the volume mount is correct in `docker-compose.yml`.
 
 **Gateway shows "unreachable" in status**
 Expected in a container — the gateway's self-probe can't verify external connectivity. As long as `curl http://localhost:18789/healthz` returns `{"ok":true}`, everything is working.
+
+**Security audit still shows `trusted_proxies_missing`**
+`gateway.trustedProxies` must be set via CLI, not the JSON5 file. Run:
+```bash
+docker compose exec openclaw-gateway node openclaw.mjs config set gateway.trustedProxies '["127.0.0.1","::1"]'
+docker compose restart openclaw-gateway
+```
+`setup.sh` does this automatically on first run.
+
+**Telegram bot not responding**
+- Check the channel is active: `docker compose exec openclaw-gateway node openclaw.mjs status`
+- Make sure you pressed **Start** in the Telegram chat (bots can't message you first)
+- If `dmPolicy: "pairing"`, approve the device via `devices approve`
+- Verify `botToken` is correct — copy it fresh from BotFather
 
 **Port already in use**
 Change `OPENCLAW_PORT` in `.env` and restart.
