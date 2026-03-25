@@ -372,9 +372,10 @@ _gw='--url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"'
 
 echo -e "  ${BOLD}First login — approve your browser (one-time per client):${RESET}"
 echo -e "    1. Open ${CYAN}http://127.0.0.1:${OPENCLAW_PORT:-18789}${RESET} — the UI shows \"pairing required\""
-echo -e "    2. List the pending request:"
+echo -e "    2. List pending requests (run AFTER opening the browser):"
 echo -e "       ${BOLD}$_exec sh -lc 'node openclaw.mjs devices list $_gw'${RESET}"
-echo -e "    3. Approve it using the Request ID:"
+echo -e "       Look for the UUID under \"Pending\" — that is the Request ID."
+echo -e "    3. Approve using the Request ID (UUID):"
 echo -e "       ${BOLD}$_exec sh -lc 'node openclaw.mjs devices approve <REQUEST_ID> $_gw'${RESET}"
 echo -e "    4. Refresh the browser — connected."
 echo ""

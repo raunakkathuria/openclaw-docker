@@ -91,16 +91,18 @@ When you open the web UI for the first time, you'll see **"pairing required"**. 
 Approving from inside the container forces a loopback connection that the gateway treats as trusted (no pairing gate):
 
 ```bash
-# 1. Open the UI — let it show "pairing required" (this creates a pending request)
+# 1. Open the UI — this creates a pending pairing request
 open http://127.0.0.1:18789
 
-# 2. List pending requests (works on both Docker and Podman)
+# 2. List pending requests — run AFTER opening the browser above
+#    Look for a short UUID under "Pending" — that is the Request ID.
+#    (The long hex IDs shown under "Paired" are already-approved devices, not usable here.)
 docker compose exec openclaw-gateway sh -lc '
   node openclaw.mjs devices list \
   --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"
 '
 
-# 3. Approve using the Request ID from the list output
+# 3. Approve using the Request ID (UUID) shown under Pending
 docker compose exec openclaw-gateway sh -lc '
   node openclaw.mjs devices approve <REQUEST_ID> \
   --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"
@@ -111,7 +113,7 @@ docker compose exec openclaw-gateway sh -lc '
 
 The `--url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"` flags are required: `--url` forces the connection via loopback (the gateway's "local" path, no pairing gate) and `--token` reads the token from the container's environment. The `sh -lc '...'` form ensures `$OPENCLAW_GATEWAY_TOKEN` expands inside the container.
 
-Approved device identities are stored in `data/identity/` and persist across gateway restarts — you only need to do this once per browser.
+Approved device identities are stored in `data/devices/paired.json` and persist as long as the gateway stays up — but re-pairing is needed after a full gateway restart (see [Troubleshooting](#troubleshooting)).
 
 ## File Layout
 
@@ -313,7 +315,27 @@ docker compose exec openclaw-gateway sh -lc '
 '
 ```
 
-Refresh the browser — connected. The approved identity persists in `data/identity/` across restarts (one-time only). See [First login — device pairing](#first-login--device-pairing) for the full walkthrough.
+Refresh the browser — connected. See [First login — device pairing](#first-login--device-pairing) for the full walkthrough.
+
+**"device signature expired" on the Control UI (after gateway restart)**
+The browser's cached auth becomes stale when the gateway restarts — its stored signed challenge references server-side state that was reset. The device entry remains in the paired list; the browser just needs fresh credentials:
+
+1. Open browser DevTools → **Application** → **Local Storage** → select `http://127.0.0.1:18789` → **Clear All** (or use *Clear site data*)
+2. Refresh the tab — the UI now shows **"pairing required"** (creates a new pending request)
+3. Re-approve (run `devices list` AFTER refreshing — only then will the pending UUID appear):
+
+```bash
+docker compose exec openclaw-gateway sh -lc '
+  node openclaw.mjs devices list \
+  --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"
+'
+docker compose exec openclaw-gateway sh -lc '
+  node openclaw.mjs devices approve <REQUEST_ID> \
+  --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"
+'
+```
+
+This is a known upstream limitation — re-pairing is required after each full gateway restart.
 
 **"origin not allowed" on the Control UI**
 The gateway rejects WebSocket connections from origins not in its allowlist. `setup.sh` sets `gateway.controlUi.allowedOrigins` automatically and restarts the gateway to apply it. If you see this manually:
