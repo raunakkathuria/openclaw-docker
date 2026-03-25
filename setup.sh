@@ -265,27 +265,23 @@ else
 fi
 info "Waiting for gateway to become healthy (up to 120s)..."
 
-# Strategy: watch container logs for the "listening" line rather than
-# hitting the HTTP endpoint — more reliable across Docker and Podman,
-# and avoids curl-not-found issues inside the container.
+# Strategy: poll the Docker/Podman health status set by the compose healthcheck
+# (wget /healthz). This is the same approach used after the config restart below,
+# and avoids relying on a specific log line that may change between releases.
 MAX_WAIT=120
 WAITED=0
 READY=0
 CONTAINER_NAME="openclaw-gateway"
 
 while [[ $WAITED -lt $MAX_WAIT ]]; do
-  # Check for the listening message in logs
-  if $COMPOSE_CMD logs openclaw-gateway 2>/dev/null | grep -q "listening on ws://"; then
+  _hs=$($RUNTIME inspect --format '{{.State.Health.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "unknown")
+  if [[ "$_hs" == "healthy" ]]; then
     READY=1
     break
   fi
-  # Also check that the container hasn't exited
-  if [[ "$RUNTIME" == "podman" ]]; then
-    STATUS=$($RUNTIME inspect --format '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "missing")
-  else
-    STATUS=$($RUNTIME inspect --format '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "missing")
-  fi
-  if [[ "$STATUS" == "exited" || "$STATUS" == "missing" ]]; then
+  # Bail out early if the container stopped
+  _cs=$($RUNTIME inspect --format '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "missing")
+  if [[ "$_cs" == "exited" || "$_cs" == "missing" ]]; then
     echo ""
     error "Gateway container exited unexpectedly. Logs:
 $($COMPOSE_CMD logs --tail=30 openclaw-gateway 2>/dev/null)"
@@ -297,7 +293,7 @@ done
 echo ""
 
 if [[ $READY -eq 0 ]]; then
-  warn "Could not confirm gateway startup via logs within ${MAX_WAIT}s."
+  warn "Could not confirm gateway startup within ${MAX_WAIT}s."
   warn "It may still be starting. Check: $COMPOSE_CMD logs openclaw-gateway"
   warn "If it's running, open http://127.0.0.1:${OPENCLAW_PORT:-18789} to continue."
   exit 0
@@ -362,28 +358,21 @@ echo ""
 echo -e "  Web UI:   ${CYAN}http://127.0.0.1:${OPENCLAW_PORT:-18789}${RESET}"
 echo -e "  Sandbox:  ${GREEN}enabled${RESET} — each agent's tool calls run in an isolated container"
 echo ""
-echo -e "  ${BOLD}Open the web UI to complete setup — then approve device pairing:${RESET}"
+_port="${OPENCLAW_PORT:-18789}"
+echo -e "  ${BOLD}First login — device pairing (one time per browser):${RESET}"
 echo ""
-# All gateway-touching CLI commands use --url + --token so the connection goes via
-# loopback inside the container. The gateway treats loopback connections as "local"
-# and skips the pairing gate. $OPENCLAW_GATEWAY_TOKEN is already set in the container env.
+echo -e "  1. Open: ${CYAN}http://127.0.0.1:${_port}${RESET}  (you'll see \"pairing required\")"
+echo -e "  2. ${BOLD}$COMPOSE_CMD exec openclaw-gateway node openclaw.mjs devices list${RESET}"
+echo -e "     Look for the UUID under Pending — that is the Request ID."
+echo -e "  3. ${BOLD}$COMPOSE_CMD exec openclaw-gateway node openclaw.mjs devices approve <REQUEST_ID>${RESET}"
+echo -e "  4. Refresh the browser — connected."
+echo ""
 _exec="$COMPOSE_CMD exec openclaw-gateway"
-_gw='--url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"'
-
-echo -e "  ${BOLD}First login — approve your browser (one-time per client):${RESET}"
-echo -e "    1. Open ${CYAN}http://127.0.0.1:${OPENCLAW_PORT:-18789}${RESET} — the UI shows \"pairing required\""
-echo -e "    2. List pending requests (run AFTER opening the browser):"
-echo -e "       ${BOLD}$_exec sh -lc 'node openclaw.mjs devices list $_gw'${RESET}"
-echo -e "       Look for the UUID under \"Pending\" — that is the Request ID."
-echo -e "    3. Approve using the Request ID (UUID):"
-echo -e "       ${BOLD}$_exec sh -lc 'node openclaw.mjs devices approve <REQUEST_ID> $_gw'${RESET}"
-echo -e "    4. Refresh the browser — connected."
-echo ""
 echo -e "  ${BOLD}Common commands:${RESET}"
-echo -e "    $COMPOSE_CMD up -d                                          # start"
-echo -e "    $COMPOSE_CMD down                                           # stop"
-echo -e "    $COMPOSE_CMD logs -f openclaw-gateway                       # stream logs"
-echo -e "    $_exec sh -lc 'node openclaw.mjs security audit $_gw'   # security check"
-echo -e "    $_exec sh -lc 'node openclaw.mjs channels add \\"
-echo -e "      --channel telegram --token \"<BOT_TOKEN>\" --url ws://127.0.0.1:18789'  # add Telegram"
+echo -e "    $COMPOSE_CMD up -d                                         # start"
+echo -e "    $COMPOSE_CMD down                                          # stop"
+echo -e "    $COMPOSE_CMD logs -f openclaw-gateway                      # stream logs"
+echo -e "    $_exec node openclaw.mjs security audit               # security check"
+echo -e "    $_exec node openclaw.mjs channels add \\                # add Telegram"
+echo -e "      --channel telegram --token \"<BOT_TOKEN>\""
 echo ""

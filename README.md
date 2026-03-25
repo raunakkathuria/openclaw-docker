@@ -86,9 +86,9 @@ open http://localhost:18789
 
 ## First login — device pairing
 
-When you open the web UI for the first time, you'll see **"pairing required"**. This is expected — by design, OpenClaw requires every new client (browser, CLI) to be approved once, even with a valid gateway token, because Docker NAT makes the connection appear non-local.
+When you open the web UI for the first time, you'll see **"pairing required"**. This is expected — by design, OpenClaw requires every new client (browser, CLI) to be approved once, because Docker NAT makes the connection appear non-local.
 
-Approving from inside the container forces a loopback connection that the gateway treats as trusted (no pairing gate):
+Approve from inside the container, which uses the trusted local loopback path (no pairing gate):
 
 ```bash
 # 1. Open the UI — this creates a pending pairing request
@@ -97,21 +97,17 @@ open http://127.0.0.1:18789
 # 2. List pending requests — run AFTER opening the browser above
 #    Look for a short UUID under "Pending" — that is the Request ID.
 #    (The long hex IDs shown under "Paired" are already-approved devices, not usable here.)
-docker compose exec openclaw-gateway sh -lc '
-  node openclaw.mjs devices list \
-  --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"
-'
+docker compose exec openclaw-gateway node openclaw.mjs devices list
 
 # 3. Approve using the Request ID (UUID) shown under Pending
-docker compose exec openclaw-gateway sh -lc '
-  node openclaw.mjs devices approve <REQUEST_ID> \
-  --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"
-'
+docker compose exec openclaw-gateway node openclaw.mjs devices approve <REQUEST_ID>
 
 # 4. Refresh the browser — connected.
 ```
 
-The `--url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"` flags are required: `--url` forces the connection via loopback (the gateway's "local" path, no pairing gate) and `--token` reads the token from the container's environment. The `sh -lc '...'` form ensures `$OPENCLAW_GATEWAY_TOKEN` expands inside the container.
+Running via `docker compose exec openclaw-gateway` uses the container's local loopback (`Source: local loopback`) — the gateway trusts this path automatically. Replace `docker compose` with `podman-compose` (or `podman compose`) for Podman.
+
+> **Do not add `--url ws://127.0.0.1:18789`** to these commands. Adding `--url` explicitly sets `Source: cli --url`, which the gateway treats as a non-local client and requires device pairing — even though the IP is loopback.
 
 Approved device identities are stored in `data/devices/paired.json` and persist as long as the gateway stays up — but re-pairing is needed after a full gateway restart (see [Troubleshooting](#troubleshooting)).
 
@@ -171,8 +167,7 @@ openclaw-docker/
 
 ## Common Commands
 
-Replace `docker compose` with `podman-compose` for Podman. All gateway-touching commands use
-`sh -lc '...'` with `--url` and `--token` — this is required on both runtimes (see [First login](#first-login--device-pairing)).
+Replace `docker compose` with `podman-compose` (or `podman compose`) for Podman. All `exec` commands use the container's local loopback — no `--url` or `--token` flags needed (see [First login](#first-login--device-pairing)).
 
 ```bash
 # Start / stop
@@ -190,20 +185,11 @@ docker compose exec openclaw-gateway node openclaw.mjs config get <path>
 docker compose exec openclaw-gateway node openclaw.mjs config set <path> <value>
 
 # Security audit
-docker compose exec openclaw-gateway sh -lc '
-  node openclaw.mjs security audit \
-  --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"
-'
+docker compose exec openclaw-gateway node openclaw.mjs security audit
 
 # Device pairing (see First login section above for full workflow)
-docker compose exec openclaw-gateway sh -lc '
-  node openclaw.mjs devices list \
-  --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"
-'
-docker compose exec openclaw-gateway sh -lc '
-  node openclaw.mjs devices approve <REQUEST_ID> \
-  --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"
-'
+docker compose exec openclaw-gateway node openclaw.mjs devices list
+docker compose exec openclaw-gateway node openclaw.mjs devices approve <REQUEST_ID>
 ```
 
 `setup.sh` prints these commands with the correct values filled in after startup.
@@ -230,22 +216,14 @@ OpenClaw uses two separate config systems:
 
 ## Channels (WhatsApp / Telegram / Discord)
 
-Use `exec` with `--url` for channel commands — `$OPENCLAW_GATEWAY_TOKEN` is read automatically from the container environment, so no separate `--token` flag is needed for gateway auth:
-
 ```bash
 # Telegram
-docker compose exec openclaw-gateway sh -lc '
-  node openclaw.mjs channels add \
-  --channel telegram --token "<BOT_TOKEN>" \
-  --url ws://127.0.0.1:18789
-'
+docker compose exec openclaw-gateway node openclaw.mjs channels add \
+  --channel telegram --token "<BOT_TOKEN>"
 
 # Discord
-docker compose exec openclaw-gateway sh -lc '
-  node openclaw.mjs channels add \
-  --channel discord --token "<BOT_TOKEN>" \
-  --url ws://127.0.0.1:18789
-'
+docker compose exec openclaw-gateway node openclaw.mjs channels add \
+  --channel discord --token "<BOT_TOKEN>"
 ```
 
 Get a Telegram token from **@BotFather** (`/newbot`). The CLI stores the token securely — you don't need to edit any config file for basic setup.
@@ -293,7 +271,7 @@ One gateway manages all agents. Each agent automatically gets its own sandbox co
 |-------|--------|
 | **Port binding** | Podman on macOS uses `pasta` networking, which can't forward loopback-only (`127.0.0.1`) bindings. `setup.sh` sets `OPENCLAW_BIND=0.0.0.0` automatically. |
 | **Sandbox mode** | The Podman Machine API socket (`*-api.sock`) can't be bind-mounted into VM containers. `setup.sh` detects this and sets `OPENCLAW_SANDBOX=0`. Sandbox can be re-enabled with TCP-based Podman access. |
-| **CLI commands** | Use `exec` with `sh -lc '... --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"'` for all gateway-touching commands — same pattern as Docker, works reliably on both runtimes. |
+| **CLI commands** | Use `exec openclaw-gateway node openclaw.mjs <subcommand>` — same pattern as Docker, no `--url` or `--token` needed when running inside the gateway container. |
 | **Two-stage startup** | Gateway starts first; socat proxy containers start after it's healthy. `podman-compose` doesn't reliably respect `depends_on: service_healthy` for `network_mode: "service:X"`. |
 
 ## Troubleshooting
@@ -303,16 +281,10 @@ This is expected — Docker NAT makes the browser appear as a non-loopback clien
 
 ```bash
 # List pending pairing requests
-docker compose exec openclaw-gateway sh -lc '
-  node openclaw.mjs devices list \
-  --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"
-'
+docker compose exec openclaw-gateway node openclaw.mjs devices list
 
 # Approve using the Request ID from the list output
-docker compose exec openclaw-gateway sh -lc '
-  node openclaw.mjs devices approve <REQUEST_ID> \
-  --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"
-'
+docker compose exec openclaw-gateway node openclaw.mjs devices approve <REQUEST_ID>
 ```
 
 Refresh the browser — connected. See [First login — device pairing](#first-login--device-pairing) for the full walkthrough.
@@ -325,14 +297,8 @@ The browser's cached auth becomes stale when the gateway restarts — its stored
 3. Re-approve (run `devices list` AFTER refreshing — only then will the pending UUID appear):
 
 ```bash
-docker compose exec openclaw-gateway sh -lc '
-  node openclaw.mjs devices list \
-  --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"
-'
-docker compose exec openclaw-gateway sh -lc '
-  node openclaw.mjs devices approve <REQUEST_ID> \
-  --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"
-'
+docker compose exec openclaw-gateway node openclaw.mjs devices list
+docker compose exec openclaw-gateway node openclaw.mjs devices approve <REQUEST_ID>
 ```
 
 This is a known upstream limitation — re-pairing is required after each full gateway restart.
@@ -370,7 +336,7 @@ docker compose restart openclaw-gateway
 **Telegram bot not responding**
 - Check the channel is active: `docker compose exec openclaw-gateway node openclaw.mjs status`
 - Make sure you pressed **Start** in the Telegram chat (bots can't message you first)
-- If `dmPolicy: "pairing"`, approve the device via `devices approve`
+- If `dmPolicy: "pairing"`, approve the Telegram user via the web UI
 - Verify `botToken` is correct — copy it fresh from BotFather
 
 **Port already in use**
