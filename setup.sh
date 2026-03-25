@@ -215,6 +215,20 @@ fi
 
 success "Gateway is ready"
 
+# ── Apply runtime config (trustedProxies) ─────────────────────────────────────
+# gateway.trustedProxies cannot be set in openclaw.json (JSON5) — OpenClaw
+# ignores it there. It must be written to the runtime config store via the CLI.
+# Trusting 127.0.0.1 / ::1 tells the gateway that the socat sidecar (which
+# forwards Docker port traffic to the loopback listener) is a known proxy,
+# clearing the "trusted_proxies_missing" security audit warning.
+step "Applying runtime config"
+
+$COMPOSE_CMD exec openclaw-gateway \
+  node openclaw.mjs config set gateway.trustedProxies '["127.0.0.1","::1"]' \
+  && success "gateway.trustedProxies set" \
+  || warn "Could not apply gateway.trustedProxies — run manually after startup:
+    $COMPOSE_CMD exec openclaw-gateway node openclaw.mjs config set gateway.trustedProxies '[\"127.0.0.1\",\"::1\"]'"
+
 # ── Onboarding wizard ─────────────────────────────────────────────────────────
 step "Running onboarding wizard"
 

@@ -14,9 +14,10 @@
       dangerouslyAllowHostHeaderOriginFallback: true,
     },
 
-    // Trust the socat proxy (runs in the same network namespace,
-    // connects from 127.0.0.1). Clears the "trustedProxies" security warn.
-    trustedProxies: ["127.0.0.1", "::1"],
+    // NOTE: gateway.trustedProxies cannot be set here — it must be written
+    // to the runtime config store via:
+    //   node openclaw.mjs config set gateway.trustedProxies '["127.0.0.1","::1"]'
+    // setup.sh does this automatically on first run.
   },
 
   // Each agent's tool calls (shell, file I/O) run inside their own
