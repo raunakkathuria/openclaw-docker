@@ -1,17 +1,15 @@
-# OpenClaw Docker Compose
-# Architecture: Single gateway with agent sandbox isolation
+# OpenClaw Docker/Podman Compose
+# Architecture: Single gateway with agent sandbox isolation.
 # Each agent's tool execution (shell, file I/O) runs in its own isolated container.
 #
 # Usage:
 #   cp .env.example .env   # then fill in your values
 #   ./setup.sh             # first-time setup + onboarding
-#   docker compose up -d   # subsequent starts
+#   podman-compose up -d   # subsequent starts
 
 services:
 
   # ── Gateway ──────────────────────────────────────────────────────────────────
-  # The main OpenClaw process. Serves the web UI, routes agent requests,
-  # and spawns sandbox containers for tool execution when OPENCLAW_SANDBOX=1.
   openclaw-gateway:
     image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
     container_name: openclaw-gateway
@@ -21,49 +19,30 @@ services:
       HOME: /home/node
       TERM: xterm-256color
       TZ: ${TZ:-UTC}
-
-      # Auth
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-
-      # Network binding — "lan" lets your host browser reach the gateway
-      OPENCLAW_GATEWAY_BIND: ${OPENCLAW_GATEWAY_BIND:-lan}
-
-      # Enable sandbox isolation for agent tool execution
       OPENCLAW_SANDBOX: ${OPENCLAW_SANDBOX:-1}
 
     volumes:
-      # Persist gateway config and workspace across container restarts
       - ./config:/home/node/.openclaw/config
       - ./workspace:/home/node/.openclaw/workspace
-      # Canvas directory — OpenClaw writes ephemeral UI state here
       - ./canvas:/home/node/.openclaw/canvas
-
-      # Docker socket mount — required for sandbox mode.
-      # The gateway uses this to spawn isolated agent containers.
       - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
 
     ports:
-      # Note: Podman on macOS handles loopback binding at the VM level.
-      # The 127.0.0.1 prefix is omitted here for Podman compatibility.
-      # Both Docker and Podman will forward these ports to localhost only.
-      - "${OPENCLAW_PORT:-18789}:18789"             # WebSocket gateway + API
-      - "${OPENCLAW_BRIDGE_PORT:-18790}:18790"       # Bridge channel (desktop pairing)
-      - "${OPENCLAW_BROWSER_PORT:-18791}:18791"      # HTTP browser control UI
+      # Podman 5+ uses pasta networking which CAN forward to container loopback.
+      # These map Mac:PORT → VM → container's 127.0.0.1:PORT correctly.
+      - "127.0.0.1:${OPENCLAW_PORT:-18789}:18789"
+      - "127.0.0.1:${OPENCLAW_BRIDGE_PORT:-18790}:18790"
+      - "127.0.0.1:${OPENCLAW_BROWSER_PORT:-18791}:18791"
 
     healthcheck:
-      # Use wget (available in the node image) to hit the liveness endpoint.
-      # Falls back to nc if wget is missing. start_period gives the gateway
-      # time to initialise before the first check fires.
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:18789/healthz >/dev/null 2>&1 || nc -z 127.0.0.1 18789"]
       interval: 15s
       timeout: 10s
       retries: 8
       start_period: 90s
 
-    cap_drop:
-      - NET_RAW
-      - NET_ADMIN
     security_opt:
       - no-new-privileges:true
 
@@ -74,9 +53,7 @@ services:
         max-file: "5"
 
   # ── CLI (on-demand) ───────────────────────────────────────────────────────────
-  # Used for one-off commands: onboarding, device approval, channel setup, etc.
-  # Shares the gateway's network namespace so it can reach the gateway directly.
-  # Run with: docker compose run --rm openclaw-cli <command>
+  # Run with: podman-compose run --rm openclaw-cli <command>
   openclaw-cli:
     image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
     container_name: openclaw-cli
@@ -92,7 +69,6 @@ services:
       TZ: ${TZ:-UTC}
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      # Suppress browser launch attempts in CLI context
       BROWSER: echo
 
     volumes:
@@ -102,21 +78,12 @@ services:
 
     stdin_open: true
     tty: true
-
-    cap_drop:
-      - NET_RAW
-      - NET_ADMIN
     security_opt:
       - no-new-privileges:true
-
-    # CLI containers exit when done — no restart policy
     profiles:
       - cli
 
   # ── Browserless (optional) ────────────────────────────────────────────────────
-  # Offloads headless browser sessions from the main container.
-  # Agents use ws://browserless:3000 for web browsing tasks.
-  # Remove this service if you don't need browser-based agent tools.
   browserless:
     image: ghcr.io/browserless/chromium:latest
     container_name: openclaw-browserless
@@ -128,17 +95,8 @@ services:
       TOKEN: ${BROWSERLESS_TOKEN:-}
 
     shm_size: 2gb
-
-    cap_drop:
-      - ALL
     security_opt:
       - no-new-privileges:true
-
-    # Not exposed to host by default — gateway reaches it via internal DNS
-    # Uncomment to expose for debugging:
-    # ports:
-    #   - "127.0.0.1:${BROWSERLESS_PORT:-3000}:3000"
-
     profiles:
       - browserless
 
