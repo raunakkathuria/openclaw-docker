@@ -12,6 +12,8 @@ data/tmp/
 # Runtime config store — written by 'config set' and updated on every gateway
 # start (lastTouchedAt). Not committed; setup.sh re-applies settings on first run.
 data/openclaw.json
+data/openclaw.json.bak
+data/openclaw.json.bak.*
 # Auto-generated update-check cache
 data/update-check.json
 # Legacy individual mounts (replaced by data/)
