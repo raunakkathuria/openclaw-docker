@@ -53,7 +53,9 @@ step "Creating directory structure"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-mkdir -p config workspace canvas
+mkdir -p data/config data/workspace data/canvas
+# Restrict state dir to owner-only (clears OpenClaw security audit warning)
+chmod 700 data
 
 # Fix ownership for the node user inside the container (uid 1000).
 # Podman rootless maps the container's uid 1000 to a subuid on the host —

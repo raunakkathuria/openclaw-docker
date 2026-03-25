@@ -33,9 +33,6 @@ services:
       - ./data:/home/node/.openclaw
       - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
 
-    # Tighten state dir permissions on startup (fixes "mode=755" security warn).
-    entrypoint: ["/bin/sh", "-c", "chmod 700 /home/node/.openclaw && exec node openclaw.mjs gateway"]
-
     ports:
       # Traffic from the host arrives here via socat (ports 18800/18802),
       # NOT directly at the gateway's loopback ports (18789/18791).
