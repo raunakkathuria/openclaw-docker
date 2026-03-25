@@ -179,13 +179,18 @@ else
   warn "Could not pull $SANDBOX_IMAGE — will be built on first agent run"
 fi
 
-# ── Start gateway ─────────────────────────────────────────────────────────────
-step "Starting OpenClaw gateway"
+# ── Start all services ────────────────────────────────────────────────────────
+step "Starting OpenClaw services"
 
 # Suppress podman-compose provider banner
 export PODMAN_COMPOSE_WARNING_LOGS=0
 
-$COMPOSE_CMD up -d openclaw-gateway
+# Start all services (gateway + socat proxies). The socat containers have
+# depends_on: service_healthy on the gateway, so compose starts them in the
+# right order automatically. Starting only 'openclaw-gateway' here would leave
+# the socat proxies stopped — nothing would bridge Docker's port-forward to the
+# gateway's loopback listener, causing ERR_EMPTY_RESPONSE in the browser.
+$COMPOSE_CMD up -d
 info "Waiting for gateway to become healthy (up to 120s)..."
 
 # Strategy: watch container logs for the "listening" line rather than
