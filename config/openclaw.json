@@ -1,0 +1,50 @@
+// OpenClaw Agent Configuration
+// This file is read by the gateway on startup.
+// JSON5 syntax is supported (comments, trailing commas).
+//
+// Docs: https://docs.openclaw.ai/config
+{
+  // ── Agent sandbox defaults ────────────────────────────────────────────────
+  // These settings apply to ALL agents unless overridden per-agent.
+  // With sandbox enabled, each agent's tool calls (shell, file I/O, etc.)
+  // run inside their own short-lived Docker container — completely isolated
+  // from the gateway and from other agents.
+  agents: {
+    defaults: {
+      sandbox: {
+        // "non-main"  → sandbox everything except the primary session (recommended)
+        // "all"       → sandbox even the main agent session
+        // "off"       → disable sandboxing (not recommended for production)
+        mode: "non-main",
+
+        // Scope of sandbox reuse:
+        // "agent"   → one sandbox per agent identity (reused across sessions)
+        // "session" → one sandbox per conversation session (freshest isolation)
+        // "shared"  → all agents share a single sandbox (least isolated)
+        scope: "agent",
+
+        // Harden each sandbox container
+        readOnlyRoot: true,   // prevent writes outside mounted workspace
+        network: "none",      // no outbound network from inside the sandbox
+        capDrop: ["ALL"],     // drop all Linux capabilities
+        memory: "1g",         // memory limit per sandbox container
+        pids: 256,            // max processes per sandbox
+      },
+    },
+  },
+
+  // ── Gateway settings ──────────────────────────────────────────────────────
+  gateway: {
+    // Bind mode — should match OPENCLAW_GATEWAY_BIND in your .env
+    bind: "lan",
+  },
+
+  // ── Skills (extensions) ───────────────────────────────────────────────────
+  // Install gateway-level skills here. These are available to all agents.
+  // See: https://docs.openclaw.ai/skills
+  skills: {
+    // "clawhub": {},          // package manager — recommended
+    // "mcporter": {},         // MCP tool bridge
+    // "model-usage": {},      // token + cost metrics
+  },
+}

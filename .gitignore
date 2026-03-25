@@ -1,0 +1,6 @@
+.env
+workspace/
+canvas/
+config/agents/
+config/sessions/
+*.log
