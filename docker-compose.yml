@@ -1,12 +1,17 @@
 # OpenClaw Docker Compose
 # Architecture: Single gateway + isolated agent sandboxes.
-# Each agent's tool execution runs in its own ephemeral container.
+#
+# WHY the socat proxy?
+# OpenClaw's gateway binds exclusively to 127.0.0.1 (container loopback).
+# Docker port-forwarding delivers traffic to the container's eth0 interface,
+# which never reaches loopback. The socat container shares the gateway's
+# network namespace, listens on 0.0.0.0 (all interfaces including eth0),
+# and forwards to 127.0.0.1 where the gateway actually listens.
 #
 # Usage:
 #   cp .env.example .env        # fill in ANTHROPIC_API_KEY + OPENCLAW_GATEWAY_TOKEN
-#   docker compose up -d        # start
-#   docker compose logs -f      # stream logs
-#   open http://127.0.0.1:18789 # web UI
+#   docker compose up -d        # start gateway + proxy
+#   open http://localhost:18789  # web UI
 
 services:
 
@@ -25,23 +30,23 @@ services:
       OPENCLAW_SANDBOX: ${OPENCLAW_SANDBOX:-1}
 
     volumes:
-      # Mount the entire .openclaw parent so OpenClaw can freely create
-      # any subdirectory it needs (identity, sessions, logs, agents, etc.)
-      # without hitting EACCES errors from missing individual mounts.
       - ./data:/home/node/.openclaw
       - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
 
     ports:
-      - "127.0.0.1:${OPENCLAW_PORT:-18789}:18789"        # Web UI + WebSocket
-      - "127.0.0.1:${OPENCLAW_BRIDGE_PORT:-18790}:18790"  # Desktop pairing
-      - "127.0.0.1:${OPENCLAW_BROWSER_PORT:-18791}:18791" # Browser control
+      # Traffic from the host arrives here via socat (ports 18800/18802),
+      # NOT directly at the gateway's loopback ports (18789/18791).
+      - "127.0.0.1:${OPENCLAW_PORT:-18789}:18800"        # → socat → gateway ws
+      - "127.0.0.1:${OPENCLAW_BRIDGE_PORT:-18790}:18790"  # bridge (direct)
+      - "127.0.0.1:${OPENCLAW_BROWSER_PORT:-18791}:18802" # → socat → browser ctrl
 
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:18789/healthz >/dev/null 2>&1 || nc -z 127.0.0.1 18789"]
+      # Runs inside the container — can reach loopback directly.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:18789/healthz >/dev/null 2>&1"]
       interval: 15s
       timeout: 10s
       retries: 8
-      start_period: 90s
+      start_period: 60s
 
     cap_drop:
       - NET_RAW
@@ -55,12 +60,31 @@ services:
         max-size: "20m"
         max-file: "5"
 
+  # ── Loopback proxy ────────────────────────────────────────────────────────────
+  # Shares the gateway's network namespace. Listens on 0.0.0.0 so Docker's
+  # port forwarding can reach it, then forwards to the gateway's loopback.
+  openclaw-proxy:
+    image: alpine/socat
+    container_name: openclaw-proxy
+    network_mode: "service:openclaw-gateway"
+    restart: unless-stopped
+    # Forward two ports: gateway WebSocket (18800→18789) and browser control (18802→18791)
+    command: >
+      sh -c "
+        socat TCP-LISTEN:18800,fork,reuseaddr TCP:127.0.0.1:18789 &
+        socat TCP-LISTEN:18802,fork,reuseaddr TCP:127.0.0.1:18791 &
+        wait
+      "
+    depends_on:
+      openclaw-gateway:
+        condition: service_healthy
+
   # ── CLI (on-demand) ────────────────────────────────────────────────────────────
   # docker compose run --rm openclaw-cli <command>
   openclaw-cli:
     image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
     container_name: openclaw-cli
-    network_mode: service:openclaw-gateway
+    network_mode: "service:openclaw-gateway"
 
     depends_on:
       openclaw-gateway:
@@ -88,17 +112,14 @@ services:
       - cli
 
   # ── Browserless (optional) ─────────────────────────────────────────────────────
-  # docker compose --profile browserless up -d
   browserless:
     image: ghcr.io/browserless/chromium:latest
     container_name: openclaw-browserless
     restart: unless-stopped
-
     environment:
       CONCURRENT: 10
       TIMEOUT: 60000
       TOKEN: ${BROWSERLESS_TOKEN:-}
-
     shm_size: 2gb
     cap_drop:
       - ALL
@@ -106,7 +127,6 @@ services:
       - no-new-privileges:true
     profiles:
       - browserless
-
     logging:
       driver: json-file
       options:
