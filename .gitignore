@@ -1,6 +1,12 @@
 .env
+data/workspace/
+data/canvas/
+data/identity/
+data/sessions/
+data/agents/
+data/logs/
+data/tmp/
+# Legacy individual mounts (replaced by data/)
 workspace/
 canvas/
-config/agents/
-config/sessions/
 *.log

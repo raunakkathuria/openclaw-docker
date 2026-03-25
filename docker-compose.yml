@@ -25,9 +25,10 @@ services:
       OPENCLAW_SANDBOX: ${OPENCLAW_SANDBOX:-1}
 
     volumes:
-      - ./config:/home/node/.openclaw/config
-      - ./workspace:/home/node/.openclaw/workspace
-      - ./canvas:/home/node/.openclaw/canvas
+      # Mount the entire .openclaw parent so OpenClaw can freely create
+      # any subdirectory it needs (identity, sessions, logs, agents, etc.)
+      # without hitting EACCES errors from missing individual mounts.
+      - ./data:/home/node/.openclaw
       - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
 
     ports:
@@ -74,9 +75,7 @@ services:
       BROWSER: echo
 
     volumes:
-      - ./config:/home/node/.openclaw/config
-      - ./workspace:/home/node/.openclaw/workspace
-      - ./canvas:/home/node/.openclaw/canvas
+      - ./data:/home/node/.openclaw
 
     stdin_open: true
     tty: true
