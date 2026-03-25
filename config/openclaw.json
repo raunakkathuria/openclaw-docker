@@ -1,35 +1,32 @@
-// OpenClaw Agent Configuration
-// JSON5 syntax is supported (comments, trailing commas).
+// OpenClaw gateway + agent configuration (JSON5)
 {
   gateway: {
-    // CRITICAL for self-hosted/container deployments.
+    // Required for self-hosted deployments — without this OpenClaw
+    // tries to connect to the remote Claude.ai gateway and won't start.
     mode: "local",
 
-    // "lan" makes the gateway accept connections arriving via port forwarding
-    // (not just its own loopback). Required for Docker/Podman to reach it.
-    // Valid values: loopback | lan | tailnet | custom | auto
+    // "lan" accepts connections arriving via Docker port forwarding.
     bind: "lan",
 
-    // Required when bind != "loopback". OpenClaw enforces an origin allowlist
-    // for the Control UI when listening on non-loopback interfaces.
-    // Add every origin you'll open in a browser.
+    // Required when bind != "loopback": explicit origin allowlist for the
+    // Control UI. Add any host:port you open in a browser.
     controlUi: {
       allowedOrigins: [
         "http://127.0.0.1:18789",
         "http://localhost:18789",
       ],
-      // Simpler alternative — uses the HTTP Host header as the allowed origin.
-      // Uncomment this and remove allowedOrigins if you keep hitting origin errors:
-      dangerouslyAllowHostHeaderOriginFallback: true,
+      // Uncomment as a simpler alternative to the allowedOrigins list:
+      // dangerouslyAllowHostHeaderOriginFallback: true,
     },
   },
 
-  // Agent sandbox: each agent's tool calls run in their own isolated container.
+  // Each agent's tool calls (shell, file I/O) run inside their own
+  // short-lived isolated container — no shared state between agents.
   agents: {
     defaults: {
       sandbox: {
-        mode: "non-main",   // off | non-main | all
-        scope: "agent",     // session | agent | shared
+        mode: "non-main",  // off | non-main | all
+        scope: "agent",    // session | agent | shared
         readOnlyRoot: true,
         network: "none",
         capDrop: ["ALL"],

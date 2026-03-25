@@ -1,15 +1,16 @@
-# OpenClaw Docker/Podman Compose
-# Architecture: Single gateway with agent sandbox isolation.
-# Each agent's tool execution (shell, file I/O) runs in its own isolated container.
+# OpenClaw Docker Compose
+# Architecture: Single gateway + isolated agent sandboxes.
+# Each agent's tool execution runs in its own ephemeral container.
 #
 # Usage:
-#   cp .env.example .env   # then fill in your values
-#   ./setup.sh             # first-time setup + onboarding
-#   podman-compose up -d   # subsequent starts
+#   cp .env.example .env        # fill in ANTHROPIC_API_KEY + OPENCLAW_GATEWAY_TOKEN
+#   docker compose up -d        # start
+#   docker compose logs -f      # stream logs
+#   open http://127.0.0.1:18789 # web UI
 
 services:
 
-  # ── Gateway ──────────────────────────────────────────────────────────────────
+  # ── Gateway ───────────────────────────────────────────────────────────────────
   openclaw-gateway:
     image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
     container_name: openclaw-gateway
@@ -30,11 +31,9 @@ services:
       - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
 
     ports:
-      # Podman 5+ uses pasta networking which CAN forward to container loopback.
-      # These map Mac:PORT → VM → container's 127.0.0.1:PORT correctly.
-      - "127.0.0.1:${OPENCLAW_PORT:-18789}:18789"
-      - "127.0.0.1:${OPENCLAW_BRIDGE_PORT:-18790}:18790"
-      - "127.0.0.1:${OPENCLAW_BROWSER_PORT:-18791}:18791"
+      - "127.0.0.1:${OPENCLAW_PORT:-18789}:18789"        # Web UI + WebSocket
+      - "127.0.0.1:${OPENCLAW_BRIDGE_PORT:-18790}:18790"  # Desktop pairing
+      - "127.0.0.1:${OPENCLAW_BROWSER_PORT:-18791}:18791" # Browser control
 
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:18789/healthz >/dev/null 2>&1 || nc -z 127.0.0.1 18789"]
@@ -43,6 +42,9 @@ services:
       retries: 8
       start_period: 90s
 
+    cap_drop:
+      - NET_RAW
+      - NET_ADMIN
     security_opt:
       - no-new-privileges:true
 
@@ -52,8 +54,8 @@ services:
         max-size: "20m"
         max-file: "5"
 
-  # ── CLI (on-demand) ───────────────────────────────────────────────────────────
-  # Run with: podman-compose run --rm openclaw-cli <command>
+  # ── CLI (on-demand) ────────────────────────────────────────────────────────────
+  # docker compose run --rm openclaw-cli <command>
   openclaw-cli:
     image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
     container_name: openclaw-cli
@@ -78,12 +80,16 @@ services:
 
     stdin_open: true
     tty: true
+    cap_drop:
+      - NET_RAW
+      - NET_ADMIN
     security_opt:
       - no-new-privileges:true
     profiles:
       - cli
 
-  # ── Browserless (optional) ────────────────────────────────────────────────────
+  # ── Browserless (optional) ─────────────────────────────────────────────────────
+  # docker compose --profile browserless up -d
   browserless:
     image: ghcr.io/browserless/chromium:latest
     container_name: openclaw-browserless
@@ -95,6 +101,8 @@ services:
       TOKEN: ${BROWSERLESS_TOKEN:-}
 
     shm_size: 2gb
+    cap_drop:
+      - ALL
     security_opt:
       - no-new-privileges:true
     profiles:
