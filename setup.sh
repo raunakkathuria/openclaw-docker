@@ -227,8 +227,7 @@ echo ""
 if [[ $READY -eq 0 ]]; then
   warn "Could not confirm gateway startup via logs within ${MAX_WAIT}s."
   warn "It may still be starting. Check: $COMPOSE_CMD logs openclaw-gateway"
-  warn "If it's running, you can proceed manually:"
-  warn "  $COMPOSE_CMD run --rm openclaw-cli onboard"
+  warn "If it's running, open http://127.0.0.1:${OPENCLAW_PORT:-18789} to continue."
   exit 0
 fi
 
@@ -248,29 +247,23 @@ $COMPOSE_CMD exec openclaw-gateway \
   || warn "Could not apply gateway.trustedProxies — run manually after startup:
     $COMPOSE_CMD exec openclaw-gateway node openclaw.mjs config set gateway.trustedProxies '[\"127.0.0.1\",\"::1\"]'"
 
-# ── Onboarding wizard ─────────────────────────────────────────────────────────
-step "Running onboarding wizard"
-
-info "The wizard will walk you through pairing a device and configuring your first agent."
-$COMPOSE_CMD run --rm openclaw-cli onboard
-
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════╗${RESET}"
 echo -e "${GREEN}${BOLD}║  OpenClaw is up and running!             ║${RESET}"
 echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════╝${RESET}"
 echo ""
-echo -e "  Web UI:      ${CYAN}http://127.0.0.1:${OPENCLAW_PORT:-18789}${RESET}"
-echo -e "  Sandbox:     ${GREEN}enabled${RESET} (each agent isolated in its own container)"
+echo -e "  Web UI:   ${CYAN}http://127.0.0.1:${OPENCLAW_PORT:-18789}${RESET}"
+echo -e "  Sandbox:  ${GREEN}enabled${RESET} — each agent's tool calls run in an isolated container"
 echo ""
-echo -e "  ${BOLD}Useful commands (replace 'podman-compose' with 'docker compose' if using Docker):${RESET}"
-echo -e "    $COMPOSE_CMD up -d                          # start"
-echo -e "    $COMPOSE_CMD down                           # stop"
-echo -e "    $COMPOSE_CMD logs -f openclaw-gateway       # stream logs"
-echo -e "    $COMPOSE_CMD run --rm openclaw-cli <cmd>    # run CLI command"
-echo -e "    $RUNTIME exec -it openclaw-gateway bash     # shell into gateway"
+echo -e "  ${BOLD}Open the web UI to complete setup${RESET} (device pairing happens in the browser)."
 echo ""
-echo -e "  ${BOLD}Approve a paired device:${RESET}"
-echo -e "    $COMPOSE_CMD run --rm openclaw-cli devices list"
-echo -e "    $COMPOSE_CMD run --rm openclaw-cli devices approve <ID>"
+echo -e "  ${BOLD}Common commands:${RESET}"
+echo -e "    $COMPOSE_CMD up -d                                    # start"
+echo -e "    $COMPOSE_CMD down                                     # stop"
+echo -e "    $COMPOSE_CMD logs -f openclaw-gateway                 # stream logs"
+echo -e "    $COMPOSE_CMD run --rm openclaw-cli security audit     # security check"
+echo -e "    $COMPOSE_CMD run --rm openclaw-cli devices list       # list paired devices"
+echo -e "    $COMPOSE_CMD run --rm openclaw-cli channels add \\     # add Telegram bot"
+echo -e "      --channel telegram --token '<TOKEN>'"
 echo ""

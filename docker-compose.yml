@@ -87,10 +87,17 @@ services:
         condition: service_healthy
 
   # ── CLI (on-demand) ────────────────────────────────────────────────────────────
-  # docker compose run --rm openclaw-cli <command>
+  # docker compose run --rm openclaw-cli <subcommand>
+  # e.g. docker compose run --rm openclaw-cli channels add --channel telegram --token "<token>"
+  #
+  # The image's docker-entrypoint.sh calls `node <arg>`, so without an explicit
+  # entrypoint `docker compose run --rm openclaw-cli onboard` would try to run
+  # `node onboard` (module not found). Setting entrypoint here makes every
+  # subcommand run as `node openclaw.mjs <subcommand>`.
   openclaw-cli:
     image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
     container_name: openclaw-cli
+    entrypoint: ["node", "openclaw.mjs"]
     network_mode: "service:openclaw-gateway"
 
     depends_on:
