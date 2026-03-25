@@ -1,205 +1,149 @@
-# OpenClaw — Docker Setup (Sandboxed Multi-Agent)
+# OpenClaw — Docker Setup
 
-**Architecture:** Single OpenClaw gateway + agent sandbox isolation.
-Each agent's tool execution (shell commands, file reads/writes) runs inside its own short-lived Docker container — completely isolated from the gateway and from other agents.
+Self-hosted OpenClaw gateway with per-agent sandbox isolation, running on Docker.
+
+## Architecture
 
 ```
-Your Browser
-    │
-    ▼ :18789
-┌─────────────────────────────────┐
-│       openclaw-gateway          │  ← always running
-│   (config/ + workspace/)        │
-└────────┬────────────────────────┘
-         │ spawns sandbox containers
-         │ via Docker socket
-    ┌────┴────┐   ┌────────────┐   ┌────────────┐
-    │ agent-A │   │  agent-B   │   │  agent-C   │
-    │ sandbox │   │  sandbox   │   │  sandbox   │
-    │ (1g RAM │   │  (no net)  │   │  read-only │
-    │  no net)│   │  capDrop:  │   │  filesystem│
-    └─────────┘   │   ALL      │   └────────────┘
-                  └────────────┘
+Browser / curl
+  │
+  │ http://localhost:18789
+  ▼
+┌─────────────────────────────────────────────┐
+│  Docker port mapping                        │
+│  host:18789 → container:18800               │
+└─────────────────┬───────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────┐  ┐
+│  openclaw-proxy-ws  (alpine/socat)          │  │ shared
+│  0.0.0.0:18800 → 127.0.0.1:18789           │  │ network
+├─────────────────────────────────────────────┤  │ namespace
+│  openclaw-gateway                           │  │
+│  node openclaw.mjs  ·  127.0.0.1:18789     │  │
+│  ./data → /home/node/.openclaw              │  │
+└─────────────────┬───────────────────────────┘  ┘
+                  │ spawns sandbox containers
+                  │ via Docker socket
+        ┌─────────┴──────────┐
+        │  agent-A sandbox   │  (ephemeral, isolated per tool call)
+        │  network: none     │  read-only root · capDrop: ALL · 1g RAM
+        └────────────────────┘
 ```
+
+**Why socat?** OpenClaw's gateway always binds to `127.0.0.1` (container loopback). Docker's port forwarding delivers traffic to the container's `eth0` interface — a different address — so they never connect. The socat sidecar shares the gateway's network namespace, listens on `0.0.0.0` (reachable via eth0), and forwards to `127.0.0.1:18789`.
 
 ## Quick Start
 
-### 1. Clone / copy this folder to your machine
-
-### 2. Run setup (first time only)
-
 ```bash
-./setup.sh
+# 1. Configure
+cp .env.example .env
+# Edit .env: set ANTHROPIC_API_KEY and OPENCLAW_GATEWAY_TOKEN
+
+# 2. Generate a gateway token if you don't have one
+openssl rand -hex 32
+
+# 3. Start
+docker compose up -d
+
+# 4. Verify
+curl http://localhost:18789/healthz
+# → {"ok":true,"status":"live"}
+
+# 5. Open
+open http://localhost:18789
 ```
-
-The script will:
-- Check Docker is running
-- Create `config/` and `workspace/` directories
-- Generate a `.env` from `.env.example` with a random gateway token
-- Prompt you to add your `ANTHROPIC_API_KEY`
-- Pull the OpenClaw image
-- Start the gateway
-- Launch the onboarding wizard
-
-### 3. Open the web UI
-
-```
-http://127.0.0.1:18789
-```
-
----
-
-## Daily Operations
-
-| Action | Command |
-|--------|---------|
-| Start | `docker compose up -d` |
-| Stop | `docker compose down` |
-| View logs | `docker compose logs -f openclaw-gateway` |
-| Shell into gateway | `docker compose exec openclaw-gateway bash` |
-| Run CLI command | `docker compose run --rm openclaw-cli <command>` |
-| Check health | `curl -fsS http://127.0.0.1:18789/healthz` |
-
----
-
-## Sandbox Explained
-
-Sandbox mode is enabled by default (`OPENCLAW_SANDBOX=1`).
-
-When an agent calls a tool (e.g. runs a shell command or reads a file), the gateway spawns a fresh Docker container to execute it. That container:
-
-- Has **no network access** (`network: none`) — can't make outbound requests
-- Has a **read-only root filesystem** — can't tamper with the host
-- Has **all Linux capabilities dropped** (`capDrop: ALL`)
-- Is **memory-limited to 1 GB** and **process-limited to 256 PIDs**
-- Is **destroyed** after the tool call completes
-
-This means even if an agent goes rogue or gets confused, its blast radius is limited to its own sandbox container — your host and other agents are not affected.
-
-Configuration lives in `config/openclaw.json` under `agents.defaults.sandbox`.
-
----
 
 ## File Layout
 
 ```
 openclaw-docker/
-├── docker-compose.yml      # All services
-├── .env.example            # Template — copy to .env
-├── .env                    # Your secrets (git-ignored)
-├── setup.sh                # First-time setup script
-├── config/
-│   └── openclaw.json       # Agent + sandbox + gateway config
-└── workspace/              # Agent memory, files, session logs
+├── docker-compose.yml       # All services
+├── .env.example             # Config template — copy to .env
+├── .env                     # Your secrets (git-ignored)
+├── setup.sh                 # First-run setup helper
+├── data/
+│   └── config/
+│       └── openclaw.json    # Gateway + agent config (tracked)
+│   └── workspace/           # Agent files (git-ignored)
+│   └── identity/            # Auth state (git-ignored)
+│   └── sessions/            # Session logs (git-ignored)
+└── README.md
 ```
 
-**Important:** Add `.env` and `workspace/` to your `.gitignore` if you put this in a repo.
+`data/` is mounted as `/home/node/.openclaw` so OpenClaw can create any subdirectory it needs without permission errors.
 
----
+## Services
 
-## Multiple Agents
+| Service | Image | Purpose |
+|---------|-------|---------|
+| `openclaw-gateway` | `ghcr.io/openclaw/openclaw` | Main gateway process |
+| `openclaw-proxy-ws` | `alpine/socat` | Bridges host→loopback for port 18789 |
+| `openclaw-proxy-browser` | `alpine/socat` | Bridges host→loopback for port 18791 |
+| `openclaw-cli` | `ghcr.io/openclaw/openclaw` | On-demand CLI (profile: cli) |
+| `browserless` | `ghcr.io/browserless/chromium` | Headless browser (profile: browserless) |
 
-You don't need to run multiple gateways for multiple agents. One gateway manages all your agents. Each agent automatically gets its own sandbox when it calls tools.
+## Ports
 
-To create a new agent, use the web UI at `http://127.0.0.1:18789` → Agents → New Agent.
+| Host port | Purpose |
+|-----------|---------|
+| `18789` | Web UI + WebSocket gateway |
+| `18790` | Bridge channel (desktop app pairing) |
+| `18791` | Browser control UI |
 
-If you want truly separate gateways (e.g. different API key budgets, completely different configs), duplicate the compose service with different ports and config directories — see the "Advanced: Multiple Gateways" section below.
+All bound to `127.0.0.1` — local access only.
 
----
-
-## Channels (WhatsApp / Telegram / Discord)
+## Common Commands
 
 ```bash
-# WhatsApp
-docker compose run --rm openclaw-cli channels login
+# Start / stop
+docker compose up -d
+docker compose down
 
-# Telegram
-docker compose run --rm openclaw-cli channels add --channel telegram --token "<BOT_TOKEN>"
+# Logs
+docker compose logs -f openclaw-gateway
 
-# Discord
-docker compose run --rm openclaw-cli channels add --channel discord --token "<BOT_TOKEN>"
-```
+# Status
+docker compose exec openclaw-gateway node openclaw.mjs status
 
----
+# Security audit
+docker compose exec openclaw-gateway node openclaw.mjs security audit
 
-## Browser Agent Support (optional)
+# Approve a paired device
+docker compose exec openclaw-gateway node openclaw.mjs devices list
+docker compose exec openclaw-gateway node openclaw.mjs devices approve <ID>
 
-Uncomment the `browserless` service in `docker-compose.yml` and start it:
+# Add a channel (Telegram, Discord, WhatsApp)
+docker compose run --rm openclaw-cli channels add --channel telegram --token "<TOKEN>"
 
-```bash
-docker compose --profile browserless up -d
-```
-
-Then configure an agent to use `ws://browserless:3000` for web browsing. This offloads Chrome from the main gateway container.
-
----
-
-## Advanced: Multiple Gateways
-
-For strict budget/config separation, you can run multiple gateway instances. Add to `docker-compose.yml`:
-
-```yaml
-  openclaw-gateway-ops:
-    image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
-    container_name: openclaw-gateway-ops
-    restart: unless-stopped
-    environment:
-      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN_OPS}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY_OPS}
-      OPENCLAW_SANDBOX: "1"
-    volumes:
-      - ./config-ops:/home/node/.openclaw/config
-      - ./workspace-ops:/home/node/.openclaw/workspace
-      - /var/run/docker.sock:/var/run/docker.sock
-    ports:
-      - "127.0.0.1:18791:18789"
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:18789/healthz"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 45s
-```
-
-Each gateway gets its own port, its own config directory, and its own API key.
-
----
-
-## Troubleshooting
-
-**Gateway OOM (exit 137)**
-Increase Docker Desktop memory limit to at least 2–4 GB in Settings → Resources.
-
-**Permission error on config/workspace**
-```bash
-sudo chown -R 1000:1000 config workspace
-```
-
-**Sandbox containers not spawning (Docker Desktop Mac)**
-The Docker socket path may differ. Set in `.env`:
-```
-DOCKER_SOCKET=/Users/<you>/.docker/run/docker.sock
-```
-
-**Pairing failed / gateway unreachable**
-```bash
-docker compose run --rm openclaw-cli config set gateway.mode local
-docker compose run --rm openclaw-cli config set gateway.bind lan
+# Restart just the gateway (picks up config changes)
 docker compose restart openclaw-gateway
 ```
 
-**Approve a paired device**
-```bash
-docker compose run --rm openclaw-cli devices list
-docker compose run --rm openclaw-cli devices approve <ID>
-```
+## Key Config (`data/config/openclaw.json`)
 
----
+| Setting | Value | Why |
+|---------|-------|-----|
+| `gateway.mode` | `"local"` | Required for self-hosted — without this, OpenClaw tries to connect to Claude.ai's remote gateway |
+| `gateway.bind` | `"lan"` | Accepts port-forwarded connections, not just loopback |
+| `gateway.trustedProxies` | `["127.0.0.1","::1"]` | Trusts the socat proxy (same network namespace) |
+| `gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback` | `true` | Required with non-loopback bind — uses HTTP Host header for origin check |
+| `agents.defaults.sandbox.mode` | `"non-main"` | Each agent's tool calls run in isolated containers |
 
-## References
+## Multiple Agents
 
-- [OpenClaw Docker docs](https://docs.openclaw.ai/install/docker)
-- [Official docker-compose.yml](https://github.com/openclaw/openclaw/blob/main/docker-compose.yml)
-- [katitusi/clawbot](https://github.com/katitusi/clawbot) — production hardening reference
-- [joshua5201/openclaw-docker-compose](https://github.com/joshua5201/openclaw-docker-compose) — isolated sandbox setup
-- [Docker blog: OpenClaw sandboxes](https://www.docker.com/blog/run-openclaw-securely-in-docker-sandboxes/)
+One gateway manages all agents. Each agent automatically gets its own sandbox container for tool calls — no extra config needed. Create agents via the web UI at `http://localhost:18789`.
+
+## Troubleshooting
+
+**`curl: (52) Empty reply from server`**
+The gateway is running but the origin check is blocking the connection. Ensure `dangerouslyAllowHostHeaderOriginFallback: true` is in `data/config/openclaw.json` and restart.
+
+**`EACCES: permission denied, mkdir '/home/node/.openclaw/<dir>'`**
+A new OpenClaw subdirectory couldn't be created. Since `./data` is mounted as the entire `.openclaw` dir, this shouldn't happen — check that the volume mount is correct in `docker-compose.yml`.
+
+**Gateway shows "unreachable" in status**
+Expected in a container — the gateway's self-probe can't verify external connectivity. As long as `curl http://localhost:18789/healthz` returns `{"ok":true}`, everything is working.
+
+**Port already in use**
+Change `OPENCLAW_PORT` in `.env` and restart.
