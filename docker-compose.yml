@@ -36,9 +36,15 @@ services:
     ports:
       # Traffic from the host arrives here via socat (ports 18800/18802),
       # NOT directly at the gateway's loopback ports (18789/18791).
-      - "127.0.0.1:${OPENCLAW_PORT:-18789}:18800"        # → socat → gateway ws
-      - "127.0.0.1:${OPENCLAW_BRIDGE_PORT:-18790}:18790"  # bridge (direct)
-      - "127.0.0.1:${OPENCLAW_BROWSER_PORT:-18791}:18802" # → socat → browser ctrl
+      # OPENCLAW_BIND defaults to 127.0.0.1 (Docker).
+      # Podman on macOS needs 0.0.0.0 — pasta networking can't forward loopback-only bindings.
+      # setup.sh sets OPENCLAW_BIND=0.0.0.0 automatically when Podman+macOS is detected.
+      - "${OPENCLAW_BIND:-127.0.0.1}:${OPENCLAW_PORT:-18789}:18800"        # → socat → gateway ws
+      - "${OPENCLAW_BIND:-127.0.0.1}:${OPENCLAW_BRIDGE_PORT:-18790}:18790"  # bridge (direct)
+      - "${OPENCLAW_BIND:-127.0.0.1}:${OPENCLAW_BROWSER_PORT:-18791}:18802" # → socat → browser ctrl
+      # NOTE: port 18792 (browser extension relay) is NOT exposed here.
+      # The gateway does not start its relay listener in a container deployment —
+      # it requires a local Chrome browser to be present. See README for details.
 
     healthcheck:
       # Runs inside the container — can reach loopback directly.

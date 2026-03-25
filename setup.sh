@@ -121,14 +121,22 @@ success "Environment variables validated"
 step "Verifying container socket for sandbox mode"
 
 if [[ "$RUNTIME" == "podman" ]]; then
-  # Detect Podman's Docker-compatible socket
+  # Detect Podman's Docker-compatible socket.
+  # NOTE: the Podman Machine API socket (*-api.sock / podman-machine-default-api.sock)
+  # is only for machine management — it cannot be bind-mounted into containers and
+  # causes "statfs: operation not supported" on macOS.  Skip it and look for the
+  # Docker-compatible socket instead.
   PODMAN_SOCK_CANDIDATES=(
+    "$HOME/.local/share/containers/podman/machine/podman-machine-default/podman.sock"
     "$HOME/.local/share/containers/podman/machine/podman.sock"
     "$HOME/.local/share/containers/podman/machine/qemu/podman.sock"
     "/run/user/$(id -u)/podman/podman.sock"
     "/var/run/podman/podman.sock"
+    "/var/run/docker.sock"
   )
   DOCKER_SOCKET="${DOCKER_SOCKET:-}"
+  # Reset if .env still holds the API-socket path from a previous run
+  [[ "$DOCKER_SOCKET" == *"api.sock"* ]] && DOCKER_SOCKET=""
   if [[ -z "$DOCKER_SOCKET" ]]; then
     for candidate in "${PODMAN_SOCK_CANDIDATES[@]}"; do
       if [[ -S "$candidate" ]]; then
@@ -138,7 +146,33 @@ if [[ "$RUNTIME" == "podman" ]]; then
     done
   fi
   if [[ -S "${DOCKER_SOCKET:-}" ]]; then
-    success "Podman socket found at $DOCKER_SOCKET"
+    # On macOS, Podman runs containers in a Linux VM (applehv / qemu).
+    # The Podman Machine API socket lives in $TMPDIR (/var/folders/…/T/).
+    # Socket files in that location CANNOT be bind-mounted into VM containers:
+    # virtio-fs only shares regular files and directories, not special files.
+    # Podman reports this as "statfs … operation not supported" and refuses to
+    # start the container.
+    #
+    # Workaround: swap in a dummy regular file as the bind-mount source and
+    # disable sandbox mode (agents won't run in isolated containers, but the
+    # gateway itself will start correctly).
+    _resolved="$(readlink -f "$DOCKER_SOCKET" 2>/dev/null || echo "$DOCKER_SOCKET")"
+    if [[ "$(uname)" == "Darwin" ]] && \
+       { [[ "$_resolved" == /private/var/folders/* ]] || [[ "$_resolved" == /var/folders/* ]]; }; then
+      warn "Podman API socket is in macOS temp dir and cannot be bind-mounted into the VM."
+      warn "Disabling sandbox mode (OPENCLAW_SANDBOX=0) — agents will not run in isolated containers."
+      # Create a placeholder regular file; virtio-fs can share it, avoiding the statfs error.
+      touch ./data/docker.sock
+      DOCKER_SOCKET="$(pwd)/data/docker.sock"
+      # Disable sandbox in .env
+      if grep -q "^OPENCLAW_SANDBOX=" .env; then
+        sed -i.bak "s|^OPENCLAW_SANDBOX=.*|OPENCLAW_SANDBOX=0|" .env && rm -f .env.bak
+      else
+        echo "OPENCLAW_SANDBOX=0" >> .env
+      fi
+    else
+      success "Podman socket found at $DOCKER_SOCKET"
+    fi
     # Persist into .env so docker-compose.yml picks it up
     if ! grep -q "^DOCKER_SOCKET=" .env; then
       echo "DOCKER_SOCKET=$DOCKER_SOCKET" >> .env
@@ -163,6 +197,20 @@ else
   fi
 fi
 
+# ── Podman/macOS: set bind address ────────────────────────────────────────────
+# Podman rootless on macOS uses pasta networking, which cannot forward ports
+# bound to 127.0.0.1. Switch to 0.0.0.0 so the VM network stack can reach the
+# host ports. Docker users keep 127.0.0.1 (local-only, no change needed).
+if [[ "$RUNTIME" == "podman" ]] && [[ "$(uname)" == "Darwin" ]]; then
+  if grep -q "^OPENCLAW_BIND=" .env; then
+    sed -i.bak "s|^OPENCLAW_BIND=.*|OPENCLAW_BIND=0.0.0.0|" .env && rm -f .env.bak
+  else
+    echo "OPENCLAW_BIND=0.0.0.0" >> .env
+  fi
+  source .env
+  info "OPENCLAW_BIND set to 0.0.0.0 (Podman/macOS pasta networking)"
+fi
+
 # ── Pull images ───────────────────────────────────────────────────────────────
 step "Pulling OpenClaw image"
 
@@ -182,15 +230,39 @@ fi
 # ── Start all services ────────────────────────────────────────────────────────
 step "Starting OpenClaw services"
 
+# Check that the gateway ports are not already held by an *external* process.
+# gvproxy / pasta are Podman's own port-forwarding daemons — --force-recreate
+# handles rebinding those, so we skip them here.
+for _port in "${OPENCLAW_PORT:-18789}" "${OPENCLAW_BRIDGE_PORT:-18790}" "${OPENCLAW_BROWSER_PORT:-18791}"; do
+  _pid=$(lsof -iTCP:"$_port" -sTCP:LISTEN -t 2>/dev/null || true)
+  if [[ -n "$_pid" ]]; then
+    _name=$(ps -p "$_pid" -o comm= 2>/dev/null || echo "unknown")
+    # Skip Podman's / Docker's own port-forwarding processes (match by basename
+    # since macOS ps -o comm= may return the full path)
+    _basename="${_name##*/}"
+    [[ "$_basename" == "gvproxy" || "$_basename" == "pasta" || "$_basename" == "vpnkit" ]] && continue
+    _cwd=$(lsof -p "$_pid" 2>/dev/null | awk 'NR==2{print $NF}')
+    error "Port $_port is already in use by '$_name' (PID $_pid, cwd: $_cwd).
+  Stop that process before running setup, e.g.:  kill $_pid"
+  fi
+done
+
 # Suppress podman-compose provider banner
 export PODMAN_COMPOSE_WARNING_LOGS=0
 
-# Start all services (gateway + socat proxies). The socat containers have
-# depends_on: service_healthy on the gateway, so compose starts them in the
-# right order automatically. Starting only 'openclaw-gateway' here would leave
-# the socat proxies stopped — nothing would bridge Docker's port-forward to the
-# gateway's loopback listener, causing ERR_EMPTY_RESPONSE in the browser.
-$COMPOSE_CMD up -d
+# Docker: start all services at once — depends_on: service_healthy handles ordering.
+# Podman: start only the gateway first; Podman compose doesn't reliably respect
+# depends_on ordering for network_mode: "service:X", so we wait for the gateway
+# to become healthy before starting the socat proxy containers.
+if [[ "$RUNTIME" == "podman" ]]; then
+  # Podman: start gateway first — compose doesn't reliably respect
+  # depends_on: service_healthy ordering for network_mode: "service:X",
+  # so the socat proxy containers fail with "no such container" if all
+  # services are started together.
+  $COMPOSE_CMD up -d --force-recreate openclaw-gateway
+else
+  $COMPOSE_CMD up -d
+fi
 info "Waiting for gateway to become healthy (up to 120s)..."
 
 # Strategy: watch container logs for the "listening" line rather than
@@ -233,19 +305,53 @@ fi
 
 success "Gateway is ready"
 
-# ── Apply runtime config (trustedProxies) ─────────────────────────────────────
-# gateway.trustedProxies cannot be set in openclaw.json (JSON5) — OpenClaw
+# Podman: now start the socat proxy containers — gateway is confirmed healthy
+# so they can successfully join its network namespace.
+# Name them explicitly to avoid recreating (and briefly disrupting) the gateway.
+if [[ "$RUNTIME" == "podman" ]]; then
+  $COMPOSE_CMD up -d openclaw-proxy-ws openclaw-proxy-browser
+fi
+
+# ── Apply runtime config ──────────────────────────────────────────────────────
+# gateway.trustedProxies CANNOT be set in openclaw.json (JSON5) — OpenClaw
 # ignores it there. It must be written to the runtime config store via the CLI.
-# Trusting 127.0.0.1 / ::1 tells the gateway that the socat sidecar (which
-# forwards Docker port traffic to the loopback listener) is a known proxy,
-# clearing the "trusted_proxies_missing" security audit warning.
+# controlUi.allowedOrigins CAN be in openclaw.json but we sync it here too so
+# the correct port is always current even when OPENCLAW_PORT was changed.
+# Both settings take effect after the gateway restart below.
 step "Applying runtime config"
+
+_port="${OPENCLAW_PORT:-18789}"
+_origins='["http://127.0.0.1:'"$_port"'","http://localhost:'"$_port"'"]'
 
 $COMPOSE_CMD exec openclaw-gateway \
   node openclaw.mjs config set gateway.trustedProxies '["127.0.0.1","::1"]' \
   && success "gateway.trustedProxies set" \
-  || warn "Could not apply gateway.trustedProxies — run manually after startup:
+  || warn "Could not apply gateway.trustedProxies — run manually:
     $COMPOSE_CMD exec openclaw-gateway node openclaw.mjs config set gateway.trustedProxies '[\"127.0.0.1\",\"::1\"]'"
+
+$COMPOSE_CMD exec openclaw-gateway \
+  node openclaw.mjs config set gateway.controlUi.allowedOrigins "$_origins" \
+  && success "gateway.controlUi.allowedOrigins set to $_origins" \
+  || warn "Could not set allowedOrigins — if the web UI shows 'origin not allowed', add your URL to controlUi.allowedOrigins in data/config/openclaw.json"
+
+# Restart gateway (and proxy containers for Podman) so the above config takes effect.
+step "Restarting gateway to apply config"
+if [[ "$RUNTIME" == "podman" ]]; then
+  $COMPOSE_CMD stop openclaw-proxy-browser openclaw-proxy-ws 2>/dev/null || true
+fi
+$COMPOSE_CMD restart openclaw-gateway
+info "Waiting for gateway to restart..."
+_waited=0
+while [[ $_waited -lt 60 ]]; do
+  _hs=$($RUNTIME inspect --format '{{.State.Health.Status}}' openclaw-gateway 2>/dev/null || echo "unknown")
+  [[ "$_hs" == "healthy" ]] && break
+  sleep 3; _waited=$((_waited + 3)); echo -n "."
+done
+echo ""
+if [[ "$RUNTIME" == "podman" ]]; then
+  $COMPOSE_CMD up -d openclaw-proxy-ws openclaw-proxy-browser
+fi
+success "Gateway restarted — runtime config active"
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
@@ -256,14 +362,27 @@ echo ""
 echo -e "  Web UI:   ${CYAN}http://127.0.0.1:${OPENCLAW_PORT:-18789}${RESET}"
 echo -e "  Sandbox:  ${GREEN}enabled${RESET} — each agent's tool calls run in an isolated container"
 echo ""
-echo -e "  ${BOLD}Open the web UI to complete setup${RESET} (device pairing happens in the browser)."
+echo -e "  ${BOLD}Open the web UI to complete setup — then approve device pairing:${RESET}"
+echo ""
+# All gateway-touching CLI commands use --url + --token so the connection goes via
+# loopback inside the container. The gateway treats loopback connections as "local"
+# and skips the pairing gate. $OPENCLAW_GATEWAY_TOKEN is already set in the container env.
+_exec="$COMPOSE_CMD exec openclaw-gateway"
+_gw='--url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"'
+
+echo -e "  ${BOLD}First login — approve your browser (one-time per client):${RESET}"
+echo -e "    1. Open ${CYAN}http://127.0.0.1:${OPENCLAW_PORT:-18789}${RESET} — the UI shows \"pairing required\""
+echo -e "    2. List the pending request:"
+echo -e "       ${BOLD}$_exec sh -lc 'node openclaw.mjs devices list $_gw'${RESET}"
+echo -e "    3. Approve it using the Request ID:"
+echo -e "       ${BOLD}$_exec sh -lc 'node openclaw.mjs devices approve <REQUEST_ID> $_gw'${RESET}"
+echo -e "    4. Refresh the browser — connected."
 echo ""
 echo -e "  ${BOLD}Common commands:${RESET}"
-echo -e "    $COMPOSE_CMD up -d                                    # start"
-echo -e "    $COMPOSE_CMD down                                     # stop"
-echo -e "    $COMPOSE_CMD logs -f openclaw-gateway                 # stream logs"
-echo -e "    $COMPOSE_CMD run --rm openclaw-cli security audit     # security check"
-echo -e "    $COMPOSE_CMD run --rm openclaw-cli devices list       # list paired devices"
-echo -e "    $COMPOSE_CMD run --rm openclaw-cli channels add \\     # add Telegram bot"
-echo -e "      --channel telegram --token '<TOKEN>'"
+echo -e "    $COMPOSE_CMD up -d                                          # start"
+echo -e "    $COMPOSE_CMD down                                           # stop"
+echo -e "    $COMPOSE_CMD logs -f openclaw-gateway                       # stream logs"
+echo -e "    $_exec sh -lc 'node openclaw.mjs security audit $_gw'   # security check"
+echo -e "    $_exec sh -lc 'node openclaw.mjs channels add \\"
+echo -e "      --channel telegram --token \"<BOT_TOKEN>\" --url ws://127.0.0.1:18789'  # add Telegram"
 echo ""

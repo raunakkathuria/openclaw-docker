@@ -1,6 +1,6 @@
-# OpenClaw — Docker Setup
+# OpenClaw — Docker / Podman Setup
 
-Self-hosted OpenClaw gateway with per-agent sandbox isolation, running on Docker.
+Self-hosted OpenClaw gateway with per-agent sandbox isolation, running on Docker or Podman.
 
 ## Why this repo?
 
@@ -13,7 +13,7 @@ OpenClaw's [official Docker docs](https://docs.openclaw.ai/install/docker) give 
 | **Security audit warnings** | Not covered | `0 critical · 0 warn` out of the box: `gateway.trustedProxies` is auto-applied via `setup.sh` (can't be set in the JSON5 file — silently ignored there) |
 | **Secret management** | Bot tokens / API keys go directly in config | Gitignores the live `openclaw.json`; tracks only an `.example` template — same pattern as `.env` |
 | **Multi-agent sandboxing** | Mentioned but not configured | Pre-configured agent sandbox defaults (isolated container per tool call, `network: none`, read-only root, 1 GB RAM cap, dropped capabilities) |
-| **First-run experience** | Manual steps | `setup.sh` handles runtime detection, directory creation, token generation, image pull, runtime config application, and onboarding wizard in one command |
+| **First-run experience** | Manual steps | `setup.sh` handles runtime detection, directory creation, token generation, image pull, and runtime config application in one command |
 
 The core networking fix (socat sidecar + shared network namespace) is non-obvious and not documented upstream — it was found through debugging after the standard setup failed.
 
@@ -26,7 +26,7 @@ Most Docker-based OpenClaw setups skip hardening. This repo ships with it on by 
 | **Clean security audit** | `0 critical · 0 warn` — `gateway.trustedProxies` auto-applied on first run; most setups leave this warning unresolved |
 | **Secret management** | Live `data/config/openclaw.json` is gitignored (may contain bot tokens, passwords); only the `.example` template is tracked — same pattern as `.env` |
 | **Per-agent sandbox** | Every agent's tool calls run in a dedicated ephemeral container: `capDrop: ALL`, `network: none`, read-only root filesystem, 1 GB RAM cap, 256 PID limit |
-| **Loopback-only binding** | All host ports bound to `127.0.0.1` — not reachable from other machines on the network |
+| **Loopback-only binding** | Docker: all host ports bound to `127.0.0.1` — not reachable from other machines. Podman on macOS: `0.0.0.0` (pasta networking requires it; `setup.sh` sets this automatically) |
 | **Minimal attack surface** | socat containers use `alpine/socat` (no shell, no package manager); gateway runs as non-root `node` user |
 
 ## Architecture
@@ -84,6 +84,35 @@ curl http://localhost:18789/healthz
 open http://localhost:18789
 ```
 
+## First login — device pairing
+
+When you open the web UI for the first time, you'll see **"pairing required"**. This is expected — by design, OpenClaw requires every new client (browser, CLI) to be approved once, even with a valid gateway token, because Docker NAT makes the connection appear non-local.
+
+Approving from inside the container forces a loopback connection that the gateway treats as trusted (no pairing gate):
+
+```bash
+# 1. Open the UI — let it show "pairing required" (this creates a pending request)
+open http://127.0.0.1:18789
+
+# 2. List pending requests (works on both Docker and Podman)
+docker compose exec openclaw-gateway sh -lc '
+  node openclaw.mjs devices list \
+  --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"
+'
+
+# 3. Approve using the Request ID from the list output
+docker compose exec openclaw-gateway sh -lc '
+  node openclaw.mjs devices approve <REQUEST_ID> \
+  --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"
+'
+
+# 4. Refresh the browser — connected.
+```
+
+The `--url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"` flags are required: `--url` forces the connection via loopback (the gateway's "local" path, no pairing gate) and `--token` reads the token from the container's environment. The `sh -lc '...'` form ensures `$OPENCLAW_GATEWAY_TOKEN` expands inside the container.
+
+Approved device identities are stored in `data/identity/` and persist across gateway restarts — you only need to do this once per browser.
+
 ## File Layout
 
 ```
@@ -127,15 +156,21 @@ openclaw-docker/
 
 ## Ports
 
-| Host port | Purpose |
-|-----------|---------|
-| `18789` | Web UI + WebSocket gateway |
-| `18790` | Bridge channel (desktop app pairing) |
-| `18791` | Browser control UI |
+| Host port | Env var | Purpose |
+|-----------|---------|---------|
+| `18789` | `OPENCLAW_PORT` | Web UI + WebSocket gateway |
+| `18790` | `OPENCLAW_BRIDGE_PORT` | Bridge channel (desktop app pairing) |
+| `18791` | `OPENCLAW_BROWSER_PORT` | Browser control UI |
 
-All bound to `127.0.0.1` — local access only.
+**Docker:** all bound to `127.0.0.1` — local access only.
+**Podman on macOS:** bound to `0.0.0.0` — pasta networking can't forward loopback-only ports. `setup.sh` sets this automatically.
+
+**Browser extension relay (port 18792):** The gateway does not start its relay listener (`127.0.0.1:18792`) in a container deployment — it requires a local Chrome browser to be present. The browser extension will report "Relay not reachable" when running purely in Docker/Podman. See [issue #27924](https://github.com/openclaw/openclaw/issues/27924). Workaround: install and run OpenClaw natively on the host machine alongside the Docker gateway.
 
 ## Common Commands
+
+Replace `docker compose` with `podman-compose` for Podman. All gateway-touching commands use
+`sh -lc '...'` with `--url` and `--token` — this is required on both runtimes (see [First login](#first-login--device-pairing)).
 
 ```bash
 # Start / stop
@@ -145,21 +180,31 @@ docker compose down
 # Logs
 docker compose logs -f openclaw-gateway
 
-# Status & security audit
-docker compose exec openclaw-gateway node openclaw.mjs status
-docker compose exec openclaw-gateway node openclaw.mjs security audit
-
-# Approve a paired device
-docker compose exec openclaw-gateway node openclaw.mjs devices list
-docker compose exec openclaw-gateway node openclaw.mjs devices approve <ID>
+# Restart just the gateway (picks up JSON5 config changes)
+docker compose restart openclaw-gateway
 
 # Read / write runtime config (use this, not the JSON5 file, for trustedProxies etc.)
 docker compose exec openclaw-gateway node openclaw.mjs config get <path>
 docker compose exec openclaw-gateway node openclaw.mjs config set <path> <value>
 
-# Restart just the gateway (picks up JSON5 config changes)
-docker compose restart openclaw-gateway
+# Security audit
+docker compose exec openclaw-gateway sh -lc '
+  node openclaw.mjs security audit \
+  --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"
+'
+
+# Device pairing (see First login section above for full workflow)
+docker compose exec openclaw-gateway sh -lc '
+  node openclaw.mjs devices list \
+  --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"
+'
+docker compose exec openclaw-gateway sh -lc '
+  node openclaw.mjs devices approve <REQUEST_ID> \
+  --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"
+'
 ```
+
+`setup.sh` prints these commands with the correct values filled in after startup.
 
 ## Key Config
 
@@ -179,18 +224,26 @@ OpenClaw uses two separate config systems:
 | Setting | Command | Why |
 |---------|---------|-----|
 | `gateway.trustedProxies` | `config set gateway.trustedProxies '["127.0.0.1","::1"]'` | Trusts the socat sidecar; clears the `trusted_proxies_missing` audit warning. Applied automatically by `setup.sh`. |
+| `gateway.controlUi.allowedOrigins` | `config set gateway.controlUi.allowedOrigins '["http://127.0.0.1:18789","http://localhost:18789"]'` | Allows the Control UI to load from the standard host ports. Applied automatically by `setup.sh`. Add extra entries for LAN IPs or non-default ports. |
 
 ## Channels (WhatsApp / Telegram / Discord)
 
-```bash
-# WhatsApp (QR scan)
-docker compose run --rm openclaw-cli channels login
+Use `exec` with `--url` for channel commands — `$OPENCLAW_GATEWAY_TOKEN` is read automatically from the container environment, so no separate `--token` flag is needed for gateway auth:
 
+```bash
 # Telegram
-docker compose run --rm openclaw-cli channels add --channel telegram --token "<BOT_TOKEN>"
+docker compose exec openclaw-gateway sh -lc '
+  node openclaw.mjs channels add \
+  --channel telegram --token "<BOT_TOKEN>" \
+  --url ws://127.0.0.1:18789
+'
 
 # Discord
-docker compose run --rm openclaw-cli channels add --channel discord --token "<BOT_TOKEN>"
+docker compose exec openclaw-gateway sh -lc '
+  node openclaw.mjs channels add \
+  --channel discord --token "<BOT_TOKEN>" \
+  --url ws://127.0.0.1:18789
+'
 ```
 
 Get a Telegram token from **@BotFather** (`/newbot`). The CLI stores the token securely — you don't need to edit any config file for basic setup.
@@ -230,7 +283,45 @@ Verify: `docker compose exec openclaw-gateway node openclaw.mjs status`
 
 One gateway manages all agents. Each agent automatically gets its own sandbox container for tool calls — no extra config needed. Create agents via the web UI at `http://localhost:18789`.
 
+## Podman
+
+`setup.sh` detects Podman automatically. A few differences from Docker worth knowing:
+
+| Topic | Detail |
+|-------|--------|
+| **Port binding** | Podman on macOS uses `pasta` networking, which can't forward loopback-only (`127.0.0.1`) bindings. `setup.sh` sets `OPENCLAW_BIND=0.0.0.0` automatically. |
+| **Sandbox mode** | The Podman Machine API socket (`*-api.sock`) can't be bind-mounted into VM containers. `setup.sh` detects this and sets `OPENCLAW_SANDBOX=0`. Sandbox can be re-enabled with TCP-based Podman access. |
+| **CLI commands** | Use `exec` with `sh -lc '... --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"'` for all gateway-touching commands — same pattern as Docker, works reliably on both runtimes. |
+| **Two-stage startup** | Gateway starts first; socat proxy containers start after it's healthy. `podman-compose` doesn't reliably respect `depends_on: service_healthy` for `network_mode: "service:X"`. |
+
 ## Troubleshooting
+
+**"pairing required" (error 1008) on the Control UI**
+This is expected — Docker NAT makes the browser appear as a non-loopback client, so OpenClaw requires one-time device pairing. `dangerouslyDisableDeviceAuth` does NOT fix this (confirmed upstream). Approve the device once from inside the container:
+
+```bash
+# List pending pairing requests
+docker compose exec openclaw-gateway sh -lc '
+  node openclaw.mjs devices list \
+  --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"
+'
+
+# Approve using the Request ID from the list output
+docker compose exec openclaw-gateway sh -lc '
+  node openclaw.mjs devices approve <REQUEST_ID> \
+  --url ws://127.0.0.1:18789 --token "$OPENCLAW_GATEWAY_TOKEN"
+'
+```
+
+Refresh the browser — connected. The approved identity persists in `data/identity/` across restarts (one-time only). See [First login — device pairing](#first-login--device-pairing) for the full walkthrough.
+
+**"origin not allowed" on the Control UI**
+The gateway rejects WebSocket connections from origins not in its allowlist. `setup.sh` sets `gateway.controlUi.allowedOrigins` automatically and restarts the gateway to apply it. If you see this manually:
+```bash
+docker compose exec openclaw-gateway node openclaw.mjs config set gateway.controlUi.allowedOrigins '["http://127.0.0.1:18789","http://localhost:18789"]'
+docker compose restart openclaw-gateway
+```
+If accessing from a non-default port or LAN IP, add that URL to `controlUi.allowedOrigins` in `data/config/openclaw.json`.
 
 **`curl: (52) Empty reply from server`**
 The socat proxy containers aren't running yet — the gateway binds to its own loopback (`127.0.0.1`) and socat is what bridges Docker's port-forwarding to it. Check that both proxy containers are up:

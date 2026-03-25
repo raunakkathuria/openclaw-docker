@@ -5,6 +5,8 @@ data/config/openclaw.json
 data/workspace/
 data/canvas/
 data/identity/
+data/devices/
+data/docker.sock
 data/sessions/
 data/agents/
 data/logs/
