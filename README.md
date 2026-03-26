@@ -368,3 +368,7 @@ podman-compose up -d openclaw-proxy-ws openclaw-proxy-browser
 ```
 
 `setup.sh` detects and auto-recovers this situation on its next run.
+
+## Dashboard
+
+![OpenClaw Control UI](assets/openclaw-dashboard.png)

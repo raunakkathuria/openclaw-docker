@@ -347,11 +347,13 @@ $COMPOSE_CMD exec openclaw-gateway \
   && success "gateway.controlUi.allowedOrigins set to $_origins" \
   || warn "Could not set allowedOrigins — if the web UI shows 'origin not allowed', add your URL to controlUi.allowedOrigins in data/config/openclaw.json"
 
-# Restart gateway (and proxy containers for Podman) so the above config takes effect.
+# Restart gateway and socat proxy containers so the above config takes effect.
+# Socat containers share the gateway's network namespace — after a gateway restart
+# the namespace reference becomes stale. Stop them first, restart the gateway,
+# then recreate them so they bind to the fresh namespace. This applies to both
+# Docker and Podman (Docker compose restart can also produce a new namespace).
 step "Restarting gateway to apply config"
-if [[ "$RUNTIME" == "podman" ]]; then
-  $COMPOSE_CMD stop openclaw-proxy-browser openclaw-proxy-ws 2>/dev/null || true
-fi
+$COMPOSE_CMD stop openclaw-proxy-browser openclaw-proxy-ws 2>/dev/null || true
 # Clear stale device signatures before restarting — after restart they are
 # invalid anyway, and clearing now prevents "device signature expired" in the
 # browser (replaced with the cleaner "pairing required" flow).
@@ -368,9 +370,7 @@ while [[ $_waited -lt 60 ]]; do
   sleep 3; _waited=$((_waited + 3)); echo -n "."
 done
 echo ""
-if [[ "$RUNTIME" == "podman" ]]; then
-  $COMPOSE_CMD up -d openclaw-proxy-ws openclaw-proxy-browser
-fi
+$COMPOSE_CMD up -d openclaw-proxy-ws openclaw-proxy-browser
 success "Gateway restarted — runtime config active"
 
 # ── Done ──────────────────────────────────────────────────────────────────────
@@ -403,23 +403,20 @@ echo -e "      --channel telegram --token \"<BOT_TOKEN>\""
 echo ""
 
 # ── Final reachability check ──────────────────────────────────────────────────
-# Catches the case where the gateway OOM-crashed and auto-restarted during setup:
-# socat proxy containers remain bound to the old network namespace and accept TCP
-# connections but can't forward to the new gateway loopback, causing empty replies.
+# Catches cases where socat proxies are bound to a stale network namespace:
+# - Gateway OOM-crashed and auto-restarted during setup, or
+# - docker/podman compose restart produced a new network namespace.
+# Socat accepts TCP connections but can't forward to the new gateway loopback,
+# causing "empty reply from server".
 sleep 2
 if ! curl -sf "http://127.0.0.1:${OPENCLAW_PORT:-18789}/healthz" >/dev/null 2>&1; then
   warn "Gateway health endpoint not reachable from the host."
-  warn "This can happen if the gateway crashed and auto-restarted during startup."
-  if [[ "$RUNTIME" == "podman" ]]; then
-    warn "Restarting socat proxy containers..."
-    $COMPOSE_CMD up -d openclaw-proxy-ws openclaw-proxy-browser
-    sleep 2
-    if curl -sf "http://127.0.0.1:${OPENCLAW_PORT:-18789}/healthz" >/dev/null 2>&1; then
-      success "Gateway reachable — socat proxies recovered."
-    else
-      warn "Still not reachable. Check logs: $COMPOSE_CMD logs openclaw-gateway"
-    fi
+  warn "Restarting socat proxy containers to recover namespace binding..."
+  $COMPOSE_CMD up -d openclaw-proxy-ws openclaw-proxy-browser
+  sleep 2
+  if curl -sf "http://127.0.0.1:${OPENCLAW_PORT:-18789}/healthz" >/dev/null 2>&1; then
+    success "Gateway reachable — socat proxies recovered."
   else
-    warn "Run: $COMPOSE_CMD logs openclaw-gateway"
+    warn "Still not reachable. Check logs: $COMPOSE_CMD logs openclaw-gateway"
   fi
 fi
