@@ -343,6 +343,13 @@ step "Restarting gateway to apply config"
 if [[ "$RUNTIME" == "podman" ]]; then
   $COMPOSE_CMD stop openclaw-proxy-browser openclaw-proxy-ws 2>/dev/null || true
 fi
+# Clear stale device signatures before restarting — after restart they are
+# invalid anyway, and clearing now prevents "device signature expired" in the
+# browser (replaced with the cleaner "pairing required" flow).
+$COMPOSE_CMD exec openclaw-gateway \
+  node openclaw.mjs devices clear --yes --paired 2>/dev/null \
+  && info "Cleared paired device signatures (re-pairing required after restart)" \
+  || true
 $COMPOSE_CMD restart openclaw-gateway
 info "Waiting for gateway to restart..."
 _waited=0
@@ -367,11 +374,12 @@ echo -e "  Web UI:   ${CYAN}http://127.0.0.1:${OPENCLAW_PORT:-18789}${RESET}"
 echo -e "  Sandbox:  ${GREEN}enabled${RESET} — each agent's tool calls run in an isolated container"
 echo ""
 _port="${OPENCLAW_PORT:-18789}"
-echo -e "  ${BOLD}First login — device pairing (one time per browser):${RESET}"
+echo -e "  ${BOLD}Device pairing (required after each setup run):${RESET}"
 echo ""
 echo -e "  1. Open: ${CYAN}http://127.0.0.1:${_port}${RESET}  (you'll see \"pairing required\")"
 echo -e "  2. ${BOLD}$COMPOSE_CMD exec openclaw-gateway node openclaw.mjs devices list${RESET}"
 echo -e "     Look for the UUID under Pending — that is the Request ID."
+echo -e "     If multiple UUIDs appear, approve any one — extras expire automatically."
 echo -e "  3. ${BOLD}$COMPOSE_CMD exec openclaw-gateway node openclaw.mjs devices approve <REQUEST_ID>${RESET}"
 echo -e "  4. Refresh the browser — connected."
 echo ""

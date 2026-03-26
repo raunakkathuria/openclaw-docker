@@ -49,14 +49,23 @@ Replace `docker compose` with `podman-compose` (or `podman compose`) when using 
 ## Architecture
 
 ```
-Browser → host:18789 → Docker port-map → container:18800
+Browser → host:18789 → host port-map → container:18800
                                                ↓
                                     openclaw-proxy-ws  (alpine/socat)
-                                    0.0.0.0:18800 → 127.0.0.1:18789
+                                    0.0.0.0:18800 → 127.0.0.1:18789  (web UI + WS)
                                     [shares gateway network namespace]
+
+Browser → host:18791 → host port-map → container:18802
+                                               ↓
+                                    openclaw-proxy-browser  (alpine/socat)
+                                    0.0.0.0:18802 → 127.0.0.1:18791  (browser ctrl)
+                                    [shares gateway network namespace]
+
+Desktop → host:18790 → host port-map → container:18790  (bridge, direct — no socat)
+
                                                ↓
                                     openclaw-gateway
-                                    node openclaw.mjs · 127.0.0.1:18789
+                                    node openclaw.mjs · 127.0.0.1:18789 / :18791
                                     ./data → /home/node/.openclaw
                                                ↓ spawns via Docker socket
                                     agent sandbox containers (ephemeral)

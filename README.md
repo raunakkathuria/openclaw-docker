@@ -34,20 +34,25 @@ Most Docker-based OpenClaw setups skip hardening. This repo ships with it on by 
 ```
 Browser / curl
   │
-  │ http://localhost:18789
+  │ http://127.0.0.1:18789
   ▼
 ┌─────────────────────────────────────────────┐
-│  Docker port mapping                        │
-│  host:18789 → container:18800               │
+│  Host port mapping                          │
+│  :18789 → container:18800  (web UI + WS)    │
+│  :18790 → container:18790  (bridge, direct) │
+│  :18791 → container:18802  (browser ctrl)   │
 └─────────────────┬───────────────────────────┘
                   │
                   ▼
 ┌─────────────────────────────────────────────┐  ┐
-│  openclaw-proxy-ws  (alpine/socat)          │  │ shared
-│  0.0.0.0:18800 → 127.0.0.1:18789           │  │ network
-├─────────────────────────────────────────────┤  │ namespace
+│  openclaw-proxy-ws  (alpine/socat)          │  │
+│  0.0.0.0:18800 → 127.0.0.1:18789           │  │ shared
+├─────────────────────────────────────────────┤  │ network
+│  openclaw-proxy-browser  (alpine/socat)     │  │ namespace
+│  0.0.0.0:18802 → 127.0.0.1:18791           │  │
+├─────────────────────────────────────────────┤  │
 │  openclaw-gateway                           │  │
-│  node openclaw.mjs  ·  127.0.0.1:18789     │  │
+│  node openclaw.mjs · :18789 / :18791        │  │
 │  ./data → /home/node/.openclaw              │  │
 └─────────────────┬───────────────────────────┘  ┘
                   │ spawns sandbox containers
@@ -291,7 +296,9 @@ docker compose exec openclaw-gateway node openclaw.mjs devices approve <REQUEST_
 Refresh the browser — connected. See [First login — device pairing](#first-login--device-pairing) for the full walkthrough.
 
 **"device signature expired" on the Control UI (after gateway restart)**
-The browser's cached auth becomes stale when the gateway restarts — its stored signed challenge references server-side state that was reset. The device entry remains in the paired list; the browser just needs fresh credentials:
+The browser's cached auth becomes stale when the gateway restarts. If you ran `setup.sh`,
+it clears stale device signatures automatically before restarting — you should see
+"pairing required" (not "device signature expired"). If you restarted the gateway manually:
 
 1. Open browser DevTools → **Application** → **Local Storage** → select `http://127.0.0.1:18789` → **Clear All** (or use *Clear site data*)
 2. Refresh the tab — the UI now shows **"pairing required"** (creates a new pending request)
@@ -302,7 +309,7 @@ docker compose exec openclaw-gateway node openclaw.mjs devices list
 docker compose exec openclaw-gateway node openclaw.mjs devices approve <REQUEST_ID>
 ```
 
-This is a known upstream limitation — re-pairing is required after each full gateway restart.
+If multiple pending IDs appear (from multiple refreshes or tabs), approve any one — the others expire automatically. Re-pairing is required after each gateway restart.
 
 **"origin not allowed" on the Control UI**
 The gateway rejects WebSocket connections from origins not in its allowlist. `setup.sh` sets `gateway.controlUi.allowedOrigins` automatically and restarts the gateway to apply it. If you see this manually:
