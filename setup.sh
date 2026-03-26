@@ -33,6 +33,14 @@ if command -v podman &>/dev/null && podman info &>/dev/null 2>&1; then
   # Silence podman-compose provider warning
   export PODMAN_COMPOSE_WARNING_LOGS=0
   success "Podman detected — using $COMPOSE_CMD"
+  # Warn if Podman Machine has less than 3 GB RAM — the gateway needs ~1 GB V8 heap
+  # and the VM can OOM on the first UI connection with the default 2 GB allocation.
+  _vm_mem_mb=$(podman machine inspect --format '{{.Resources.Memory}}' 2>/dev/null || echo 0)
+  if [[ $_vm_mem_mb -gt 0 && $_vm_mem_mb -lt 3072 ]]; then
+    warn "Podman Machine has ${_vm_mem_mb} MB RAM — OpenClaw gateway needs ~1 GB heap."
+    warn "Increase to at least 4 GB to avoid out-of-memory crashes:"
+    warn "  podman machine stop && podman machine set --memory 4096 && podman machine start"
+  fi
 elif command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
   RUNTIME="docker"
   if docker compose version &>/dev/null 2>&1; then
@@ -376,3 +384,25 @@ echo -e "    $_exec node openclaw.mjs security audit               # security ch
 echo -e "    $_exec node openclaw.mjs channels add \\                # add Telegram"
 echo -e "      --channel telegram --token \"<BOT_TOKEN>\""
 echo ""
+
+# ── Final reachability check ──────────────────────────────────────────────────
+# Catches the case where the gateway OOM-crashed and auto-restarted during setup:
+# socat proxy containers remain bound to the old network namespace and accept TCP
+# connections but can't forward to the new gateway loopback, causing empty replies.
+sleep 2
+if ! curl -sf "http://127.0.0.1:${OPENCLAW_PORT:-18789}/healthz" >/dev/null 2>&1; then
+  warn "Gateway health endpoint not reachable from the host."
+  warn "This can happen if the gateway crashed and auto-restarted during startup."
+  if [[ "$RUNTIME" == "podman" ]]; then
+    warn "Restarting socat proxy containers..."
+    $COMPOSE_CMD up -d openclaw-proxy-ws openclaw-proxy-browser
+    sleep 2
+    if curl -sf "http://127.0.0.1:${OPENCLAW_PORT:-18789}/healthz" >/dev/null 2>&1; then
+      success "Gateway reachable — socat proxies recovered."
+    else
+      warn "Still not reachable. Check logs: $COMPOSE_CMD logs openclaw-gateway"
+    fi
+  else
+    warn "Run: $COMPOSE_CMD logs openclaw-gateway"
+  fi
+fi

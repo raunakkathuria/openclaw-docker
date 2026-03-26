@@ -271,6 +271,7 @@ One gateway manages all agents. Each agent automatically gets its own sandbox co
 |-------|--------|
 | **Port binding** | Podman on macOS uses `pasta` networking, which can't forward loopback-only (`127.0.0.1`) bindings. `setup.sh` sets `OPENCLAW_BIND=0.0.0.0` automatically. |
 | **Sandbox mode** | The Podman Machine API socket (`*-api.sock`) can't be bind-mounted into VM containers. `setup.sh` detects this and sets `OPENCLAW_SANDBOX=0`. Sandbox can be re-enabled with TCP-based Podman access. |
+| **VM memory** | The Podman Machine defaults to 2 GB RAM. The gateway needs ~1 GB of V8 heap, which can cause OOM crashes with the default allocation. `setup.sh` warns if the VM has less than 3 GB. Increase with: `podman machine stop && podman machine set --memory 4096 && podman machine start` |
 | **CLI commands** | Use `exec openclaw-gateway node openclaw.mjs <subcommand>` — same pattern as Docker, no `--url` or `--token` needed when running inside the gateway container. |
 | **Two-stage startup** | Gateway starts first; socat proxy containers start after it's healthy. `podman-compose` doesn't reliably respect `depends_on: service_healthy` for `network_mode: "service:X"`. |
 
@@ -341,3 +342,20 @@ docker compose restart openclaw-gateway
 
 **Port already in use**
 Change `OPENCLAW_PORT` in `.env` and restart.
+
+**Gateway crashes with "JavaScript heap out of memory" (OOM)**
+The gateway needs ~1 GB of V8 heap. On Podman macOS, the Podman Machine defaults to 2 GB RAM — not enough once OS and container overhead is added. Increase the VM memory:
+
+```bash
+podman machine stop
+podman machine set --memory 4096   # 4 GB
+podman machine start
+```
+
+After an OOM crash the gateway auto-restarts (via `restart: unless-stopped`), but the socat proxy containers remain bound to the old container network namespace. They accept TCP connections but can't forward to the new gateway loopback, so the host gets an empty reply. Restart the proxies to recover:
+
+```bash
+podman-compose up -d openclaw-proxy-ws openclaw-proxy-browser
+```
+
+`setup.sh` detects and auto-recovers this situation on its next run.
