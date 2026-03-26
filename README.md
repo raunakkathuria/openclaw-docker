@@ -14,6 +14,8 @@ OpenClaw's [official Docker docs](https://docs.openclaw.ai/install/docker) give 
 | **Secret management** | Bot tokens / API keys go directly in config | Gitignores the live `openclaw.json`; tracks only an `.example` template — same pattern as `.env` |
 | **Multi-agent sandboxing** | Mentioned but not configured | Pre-configured agent sandbox defaults (isolated container per tool call, `network: none`, read-only root, 1 GB RAM cap, dropped capabilities) |
 | **First-run experience** | Manual steps | `setup.sh` handles runtime detection, directory creation, token generation, image pull, and runtime config application in one command |
+| **Image maintenance** | Other Docker wrappers build a custom `Dockerfile`, drifting from upstream | Uses the official `ghcr.io/openclaw/openclaw` image directly — no custom build step, always up to date |
+| **macOS + Podman** | Official Podman setup script is Linux-only — fails on macOS with "Neither useradd nor adduser found"; no guards for `loginctl`, subuid, or Quadlet | `setup.sh` detects macOS and handles pasta networking, API socket mount limitations, VM memory warnings, and two-stage service startup automatically |
 
 The core networking fix (socat sidecar + shared network namespace) is non-obvious and not documented upstream — it was found through debugging after the standard setup failed.
 
