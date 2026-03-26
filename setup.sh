@@ -192,7 +192,11 @@ if [[ "$RUNTIME" == "podman" ]]; then
     source .env
   else
     warn "Podman socket not found automatically. Sandbox mode may not work."
-    warn "Start the Podman machine socket with:  podman machine start"
+    if [[ "$(uname)" == "Darwin" ]]; then
+      warn "Start the Podman machine socket with:  podman machine start"
+    else
+      warn "Enable the Podman socket with:  systemctl --user start podman.socket"
+    fi
     warn "Then set DOCKER_SOCKET in .env to the socket path."
   fi
 else
@@ -201,7 +205,12 @@ else
     success "Docker socket found at $DOCKER_SOCKET"
   else
     warn "Docker socket not found at $DOCKER_SOCKET"
-    warn "On Docker Desktop (Mac), try: DOCKER_SOCKET=\$HOME/.docker/run/docker.sock"
+    if [[ "$(uname)" == "Darwin" ]]; then
+      warn "On Docker Desktop (Mac), try: DOCKER_SOCKET=\$HOME/.docker/run/docker.sock"
+    else
+      warn "Ensure the Docker daemon is running and your user is in the 'docker' group:"
+      warn "  sudo usermod -aG docker \$USER  (then log out and back in)"
+    fi
   fi
 fi
 
