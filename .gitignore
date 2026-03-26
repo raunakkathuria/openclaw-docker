@@ -20,6 +20,7 @@ data/openclaw.json.bak.*
 # Auto-generated update-check cache
 data/update-check.json
 # Legacy individual mounts (replaced by data/)
+config/
 workspace/
 canvas/
 *.log

@@ -91,7 +91,7 @@ else
   echo ""
 fi
 
-success "config/, workspace/, and canvas/ ready"
+success "data/config/, data/workspace/, and data/canvas/ ready"
 
 # ── .env setup ────────────────────────────────────────────────────────────────
 step "Environment configuration"

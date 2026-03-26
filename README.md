@@ -11,7 +11,7 @@ OpenClaw's [official Docker docs](https://docs.openclaw.ai/install/docker) give 
 | **Networking** | Mount the Docker socket and expose ports | Adds a socat sidecar to bridge Docker port-forwarding to the gateway's loopback listener (the gateway always binds to `127.0.0.1` — Docker's port-forward delivers to `eth0` — they never connect without this) |
 | **`EACCES` permission errors** | Mount individual subdirs (`config/`, `workspace/`, `canvas/`) | Mounts the entire `~/.openclaw` directory so OpenClaw can create any new subdirectory it needs without hitting permission errors |
 | **Security audit warnings** | Not covered | `0 critical · 0 warn` out of the box: `gateway.trustedProxies` is auto-applied via `setup.sh` (can't be set in the JSON5 file — silently ignored there) |
-| **Secret management** | Bot tokens / API keys go directly in config | Gitignores the live `openclaw.json`; tracks only an `.example` template — same pattern as `.env` |
+| **Secret management** | Bot tokens / API keys go directly in config | Gitignores the live `data/config/openclaw.json` (may contain bot tokens); tracks only the `.example` template — same pattern as `.env` |
 | **Multi-agent sandboxing** | Mentioned but not configured | Pre-configured agent sandbox defaults (isolated container per tool call, `network: none`, read-only root, 1 GB RAM cap, dropped capabilities) |
 | **First-run experience** | Manual steps | `setup.sh` handles runtime detection, directory creation, token generation, image pull, and runtime config application in one command |
 | **Image maintenance** | Other Docker wrappers build a custom `Dockerfile`, drifting from upstream | Uses the official `ghcr.io/openclaw/openclaw` image directly — no custom build step, always up to date |
